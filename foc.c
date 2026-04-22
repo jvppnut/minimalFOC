@@ -48,7 +48,7 @@ void FOC_Step(FOC_Motor_t *motor)
     FOC_Math_SinCos(s->theta_elec, &sin_th, &cos_th);
 
     /* --- Current feedback ------------------------------------------------ */
-    FOC_Clarke2(s->i_u, s->i_v, &s->i_alpha, &s->i_beta);
+    FOC_Clarke(s->i_u, s->i_v, s->i_w, &s->i_alpha, &s->i_beta);
     FOC_Park(s->i_alpha, s->i_beta, sin_th, cos_th, &s->i_d, &s->i_q);
 
     /* --- Control cascade ------------------------------------------------- */
