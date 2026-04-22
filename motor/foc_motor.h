@@ -8,9 +8,10 @@
  * -------------------------------------------------------------------------- */
 typedef uint8_t FOC_CtrlMode_t;
 
-#define FOC_MODE_TORQUE   ((FOC_CtrlMode_t)0)  /* Inner current loop only — i_q_ref drives   */
-#define FOC_MODE_VELOCITY ((FOC_CtrlMode_t)1)  /* Speed loop active       — omega_ref drives */
-#define FOC_MODE_POSITION ((FOC_CtrlMode_t)2)  /* Position loop active    — theta_ref drives */
+#define FOC_MODE_VOLTAGE  ((FOC_CtrlMode_t)0)  /* Direct dq voltage       — v_d_ref/v_q_ref  */
+#define FOC_MODE_TORQUE   ((FOC_CtrlMode_t)1)  /* Inner current loop only — i_q_ref drives   */
+#define FOC_MODE_VELOCITY ((FOC_CtrlMode_t)2)  /* Speed loop active       — omega_ref drives */
+#define FOC_MODE_POSITION ((FOC_CtrlMode_t)3)  /* Position loop active    — theta_ref drives */
 
 /* --------------------------------------------------------------------------
  * Physical motor constants
@@ -82,6 +83,8 @@ typedef struct {
  * -------------------------------------------------------------------------- */
 typedef struct {
     FOC_CtrlMode_t  mode;    /* Active control mode                        */
+    float  v_d_ref;          /* d-axis voltage reference       (V)         */
+    float  v_q_ref;          /* q-axis voltage reference       (V)         */
     float  i_d_ref;          /* d-axis current reference       (A)         */
     float  i_q_ref;          /* q-axis current reference       (A)         */
     float  omega_ref;        /* Speed reference                (rad/s)     */
