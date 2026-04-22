@@ -36,6 +36,13 @@ typedef struct {
     float  Ts;                /* Control loop sampling period   (s)        */
     float  dead_time;         /* PWM dead time                  (s)        */
     float  v_bus_nominal;     /* Nominal DC bus voltage         (V)        */
+    float    duty_max;        /* Maximum PWM duty cycle         [0.0, 1.0]
+                                 Low-side shunt sensing requires the low-side
+                                 MOSFET to conduct for a minimum window each
+                                 period.  Set to (1 - min_low_side_on_fraction),
+                                 e.g. 0.9 for a 10 % minimum on-time.        */
+    uint8_t  pwm_active_low; /* Non-zero if the MCU PWM output is active-low.
+                                 Duties are inverted (1 - duty) before output. */
 
     /* Angle offsets applied by the FOC before use:
      *   theta_elec = (theta_mech - theta_mech_offset) * pole_pairs

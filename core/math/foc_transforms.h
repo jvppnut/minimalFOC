@@ -1,9 +1,7 @@
 #ifndef FOC_TRANSFORMS_H
 #define FOC_TRANSFORMS_H
 
-/* Additional constants used by Clarke / inverse-Clarke. */
-#define FOC_ONE_OVER_SQRT3  0.57735026919f   /* 1/√3  */
-#define FOC_SQRT3_OVER_2    0.86602540378f   /* √3/2  */
+#include "foc_math.h"
 
 /* -------------------------------------------------------------------------
  * Clarke transform: 3-phase (UVW) → stationary 2-phase (αβ)
