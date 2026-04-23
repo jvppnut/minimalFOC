@@ -97,13 +97,9 @@ class PMSMModel:
         self.p          = params
         self.i_u        = 0.0
         self.i_v        = 0.0
+        self.i_w        = 0.0
         self.omega_mech = 0.0
         self.theta_mech = 0.0
-
-    @property
-    def i_w(self):
-        """Derived via balanced condition: i_w = -i_u - i_v."""
-        return -self.i_u - self.i_v
 
     def step(self, duty_u, duty_v, duty_w, v_bus, dt, load_torque=0.0):
         """Advance one timestep. Uses forward Euler integration."""
@@ -131,16 +127,14 @@ class PMSMModel:
         e_w = -p.lambda_pm * omega_e * np.sin(theta_e + _TWO_PI_3)
 
         # Phase current ODEs  (L = Ld; zero mutual inductance assumed)
-        i_w  = self.i_w
         d_iu = (v_un - p.Rs * self.i_u - e_u) / p.Ld
         d_iv = (v_vn - p.Rs * self.i_v - e_v) / p.Ld
-        # d_iw = -d_iu - d_iv  (implicit; consistent with balanced condition)
 
-        # Electromagnetic torque
+        # Electromagnetic torque (uses pre-integration i_w)
         Te = -p.pole_pairs * p.lambda_pm * (
               self.i_u * np.sin(theta_e)
             + self.i_v * np.sin(theta_e - _TWO_PI_3)
-            + i_w      * np.sin(theta_e + _TWO_PI_3))
+            + self.i_w * np.sin(theta_e + _TWO_PI_3))
 
         # Mechanical dynamics
         d_omega = (Te - p.Dm * self.omega_mech - load_torque) / p.J
@@ -149,6 +143,7 @@ class PMSMModel:
         # Forward Euler integration
         self.i_u        += d_iu    * dt
         self.i_v        += d_iv    * dt
+        self.i_w         = -self.i_u - self.i_v   # enforce balanced constraint
         self.omega_mech += d_omega * dt
         self.theta_mech += d_theta * dt
 
@@ -260,9 +255,12 @@ class FOCSimulator:
     Closed-loop simulation: Python PMSM model (UVW frame) + compiled C FOC_Step().
     """
 
-    def __init__(self, motor_params: MotorParams, hw: HWConfig, lib_path: str):
+    def __init__(self, motor_params: MotorParams, hw: HWConfig, lib_path: str,
+                 Ts_sim: float = None):
         self.motor_params = motor_params
         self.hw           = hw
+        # Ts_sim can be finer than hw.Ts for Euler accuracy; defaults to hw.Ts (no sub-stepping).
+        self.Ts_sim       = float(Ts_sim) if Ts_sim is not None else hw.Ts
         self.foc          = FOCLib(lib_path)
         self.foc.init(motor_params, hw)
 
@@ -291,9 +289,11 @@ class FOCSimulator:
         -------
         dict of numpy arrays keyed by signal name.
         """
-        dt = self.hw.Ts
-        n  = int(duration / dt)
-        p  = self.motor_params
+        Ts_hw  = self.hw.Ts
+        Ts_sim = self.Ts_sim
+        n_sub  = max(1, round(Ts_hw / Ts_sim))   # physics sub-steps per FOC step
+        n      = int(duration / Ts_hw)
+        p      = self.motor_params
 
         self.foc.reset()
         self.foc.set_mode(mode)
@@ -310,14 +310,17 @@ class FOCSimulator:
         duty_u = duty_v = duty_w = 0.5   # zero voltage at start
 
         for i in range(n):
-            # Step motor physics with previous cycle's duty cycles
-            motor.step(duty_u, duty_v, duty_w, self.hw.v_bus_nominal, dt, load_torque)
+            # Sub-step motor physics at Ts_sim with previous cycle's duty cycles.
+            # FOC holds its output constant across all sub-steps (ZOH).
+            for _ in range(n_sub):
+                motor.step(duty_u, duty_v, duty_w,
+                           self.hw.v_bus_nominal, Ts_sim, load_torque)
 
             # Virtual sensor: report theta_mech with an electrical angle offset.
             # The mechanical equivalent of the electrical offset is offset/pole_pairs.
             theta_mech_sensor = motor.theta_mech + virtual_elec_offset / p.pole_pairs
 
-            # Run compiled C FOC step with sensed (potentially offset) angle
+            # Run compiled C FOC step once per hw.Ts period
             duty_u, duty_v, duty_w = self.foc.step(
                 motor.i_u, motor.i_v, motor.i_w,
                 theta_mech_sensor, motor.omega_mech,
@@ -393,26 +396,27 @@ if __name__ == '__main__':
         pole_pairs=7, J=1e-4, Dm=1e-4,
         rated_current=5.0, rated_speed=200.0)
 
-    Ts = 50e-6   # 20 kHz control loop
-    hw = HWConfig(Ts=Ts, dead_time=500e-9, v_bus_nominal=24.0,
+    Ts_hw  = 50e-6   # 20 kHz FOC / hardware control loop
+    Ts_sim =  5e-6   # 200 kHz physics integration (10× finer for Euler accuracy)
+    hw = HWConfig(Ts=Ts_hw, dead_time=500e-9, v_bus_nominal=24.0,
                   duty_max=0.9, pwm_active_low=False)
 
     # Current loop gains — bandwidth-based: Kp = ωc·L, Ki = ωc·R·Ts
     wc_i  = 2 * np.pi * 1000          # 1 kHz bandwidth
     Kp_i  = wc_i * motor_params.Ld
-    Ki_i  = wc_i * motor_params.Rs * Ts
+    Ki_i  = wc_i * motor_params.Rs * Ts_hw
     Vmax  = hw.v_bus_nominal / 2.0
 
     pid_id    = PIDGains(Kp=Kp_i, Ki=Ki_i, Kd=0.0, out_min=-Vmax, out_max=Vmax)
     pid_iq    = PIDGains(Kp=Kp_i, Ki=Ki_i, Kd=0.0, out_min=-Vmax, out_max=Vmax)
-    pid_speed = PIDGains(Kp=0.3, Ki=0.3 * Ts, Kd=0.0,
+    pid_speed = PIDGains(Kp=0.3, Ki=0.3 * Ts_hw, Kd=0.0,
                          out_min=-motor_params.rated_current,
                          out_max= motor_params.rated_current)
     pid_pos   = PIDGains(Kp=30.0, Ki=0.0, Kd=0.0,
                          out_min=-motor_params.rated_speed,
                          out_max= motor_params.rated_speed)
 
-    sim = FOCSimulator(motor_params, hw, lib_path)
+    sim = FOCSimulator(motor_params, hw, lib_path, Ts_sim=Ts_sim)
     sim.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
 
     # --- Velocity step, no angle offset ---
