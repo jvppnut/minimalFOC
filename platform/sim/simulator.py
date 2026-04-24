@@ -267,23 +267,26 @@ class FOCSimulator:
     def set_pid_gains(self, pid_id, pid_iq, pid_speed, pid_pos):
         self.foc.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
 
-    def run(self, duration, mode, ref_kwargs,
-            load_torque=0.0, virtual_elec_offset=0.0):
+    def run(self, duration, mode, ref_kwargs=None,
+            load_torque=0.0, virtual_elec_offset=0.0, ref_fn=None):
         """
         Run a closed-loop simulation.
 
         Parameters
         ----------
-        duration            : float — simulation duration (s)
-        mode                : int   — FOC_MODE_* constant
-        ref_kwargs          : dict  — reference fields (e.g. {'omega_ref': 100.0})
-        load_torque         : float — constant mechanical load torque (N·m)
-        virtual_elec_offset : float — electrical angle offset injected into the
-                              virtual position sensor (rad).  Simulates an
-                              uncalibrated encoder: the FOC sees
-                              theta_e + virtual_elec_offset while the motor
-                              physics use the true theta_e.  Set hw.theta_elec_offset
-                              to -virtual_elec_offset to cancel it (calibration goal).
+        duration            : float    — simulation duration (s)
+        mode                : int      — FOC_MODE_* constant
+        ref_kwargs          : dict     — constant reference fields; ignored when
+                                         ref_fn is provided
+        load_torque         : float    — constant mechanical load torque (N·m)
+        virtual_elec_offset : float    — electrical angle offset injected into the
+                                         virtual position sensor (rad). Simulates an
+                                         uncalibrated encoder: the FOC sees
+                                         theta_e + virtual_elec_offset while the motor
+                                         physics use the true theta_e.
+        ref_fn              : callable — ref_fn(t) -> dict; if provided, called each
+                                         step to update the reference (e.g. square wave).
+                                         Overrides ref_kwargs.
 
         Returns
         -------
@@ -295,21 +298,33 @@ class FOCSimulator:
         n      = int(duration / Ts_hw)
         p      = self.motor_params
 
+        static_ref = ref_kwargs or {}
+
         self.foc.reset()
         self.foc.set_mode(mode)
-        self.foc.set_ref(**ref_kwargs)
+        if ref_fn is None:
+            self.foc.set_ref(**static_ref)
 
         motor = PMSMModel(self.motor_params)
         keys  = ('time', 'theta_mech', 'omega_mech',
                  'i_u', 'i_v', 'i_w',
                  'i_d', 'i_q', 'v_d', 'v_q',
                  'duty_u', 'duty_v', 'duty_w',
-                 'theta_elec_true', 'theta_elec_foc')
+                 'theta_elec_true', 'theta_elec_foc',
+                 'v_q_ref', 'i_q_ref')
         log   = {k: np.zeros(n) for k in keys}
 
         duty_u = duty_v = duty_w = 0.5   # zero voltage at start
 
         for i in range(n):
+            t = i * Ts_hw
+
+            if ref_fn is not None:
+                ref = ref_fn(t)
+                self.foc.set_ref(**ref)
+            else:
+                ref = static_ref
+
             # Sub-step motor physics at Ts_sim with previous cycle's duty cycles.
             # FOC holds its output constant across all sub-steps (ZOH).
             for _ in range(n_sub):
@@ -328,7 +343,7 @@ class FOCSimulator:
 
             ins = self.foc.get_internals()
 
-            log['time'][i]            = i * dt
+            log['time'][i]            = t
             log['theta_mech'][i]      = motor.theta_mech
             log['omega_mech'][i]      = motor.omega_mech
             log['i_u'][i]             = motor.i_u
@@ -343,6 +358,8 @@ class FOCSimulator:
             log['duty_w'][i]          = duty_w
             log['theta_elec_true'][i] = motor.theta_mech * p.pole_pairs
             log['theta_elec_foc'][i]  = ins['theta_elec']
+            log['v_q_ref'][i]         = ref.get('v_q_ref', 0.0)
+            log['i_q_ref'][i]         = ref.get('i_q_ref', 0.0)
 
         return log
 
@@ -379,53 +396,3 @@ class FOCSimulator:
 
         plt.tight_layout()
         plt.show()
-
-
-# ---------------------------------------------------------------------------
-# Example usage
-# ---------------------------------------------------------------------------
-
-if __name__ == '__main__':
-    here     = os.path.dirname(os.path.abspath(__file__))
-    lib_name = 'foc_sim.dll' if platform.system() == 'Windows' else 'foc_sim.so'
-    lib_path = os.path.join(here, lib_name)
-
-    # Small PMSM — robotic joint servo
-    motor_params = MotorParams(
-        Rs=0.5, Ld=1e-3, Lq=1e-3, lambda_pm=0.01,
-        pole_pairs=7, J=1e-4, Dm=1e-4,
-        rated_current=5.0, rated_speed=200.0)
-
-    Ts_hw  = 50e-6   # 20 kHz FOC / hardware control loop
-    Ts_sim =  5e-6   # 200 kHz physics integration (10× finer for Euler accuracy)
-    hw = HWConfig(Ts=Ts_hw, dead_time=500e-9, v_bus_nominal=24.0,
-                  duty_max=0.9, pwm_active_low=False)
-
-    # Current loop gains — bandwidth-based: Kp = ωc·L, Ki = ωc·R·Ts
-    wc_i  = 2 * np.pi * 1000          # 1 kHz bandwidth
-    Kp_i  = wc_i * motor_params.Ld
-    Ki_i  = wc_i * motor_params.Rs * Ts_hw
-    Vmax  = hw.v_bus_nominal / 2.0
-
-    pid_id    = PIDGains(Kp=Kp_i, Ki=Ki_i, Kd=0.0, out_min=-Vmax, out_max=Vmax)
-    pid_iq    = PIDGains(Kp=Kp_i, Ki=Ki_i, Kd=0.0, out_min=-Vmax, out_max=Vmax)
-    pid_speed = PIDGains(Kp=0.3, Ki=0.3 * Ts_hw, Kd=0.0,
-                         out_min=-motor_params.rated_current,
-                         out_max= motor_params.rated_current)
-    pid_pos   = PIDGains(Kp=30.0, Ki=0.0, Kd=0.0,
-                         out_min=-motor_params.rated_speed,
-                         out_max= motor_params.rated_speed)
-
-    sim = FOCSimulator(motor_params, hw, lib_path, Ts_sim=Ts_sim)
-    sim.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
-
-    # --- Velocity step, no angle offset ---
-    log = sim.run(duration=0.1, mode=FOC_MODE_VELOCITY,
-                  ref_kwargs={'omega_ref': 100.0, 'i_d_ref': 0.0})
-    FOCSimulator.plot(log, title='Velocity step — 0 → 100 rad/s (no offset)')
-
-    # --- Same run with a 30° electrical angle offset (calibration test) ---
-    # log_offset = sim.run(duration=0.1, mode=FOC_MODE_VELOCITY,
-    #                      ref_kwargs={'omega_ref': 100.0, 'i_d_ref': 0.0},
-    #                      virtual_elec_offset=np.radians(30.0))
-    # FOCSimulator.plot(log_offset, title='Velocity step — 30° angle offset')
