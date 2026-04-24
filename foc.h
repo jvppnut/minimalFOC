@@ -82,15 +82,18 @@ void FOC_VelocityCtrlComputation(FOC_Motor_t *motor);
 void FOC_PositionCtrlComputation(FOC_Motor_t *motor);
 
 /*
- * Electrical angle offset calibration routine.
+ * Arm the electrical angle offset calibration.
  *
- * Called once at startup before entering normal operation. Drives the motor
- * to a known voltage vector (FOC_MODE_VOLTAGE), waits for the rotor to
- * settle, then reads back theta_mech to compute and store
- * motor->hw.theta_elec_offset.
+ * Sets r->mode to FOC_MODE_CALIBRATE and stores the calibration parameters in
+ * motor->hw.  The caller continues its normal FOC_Step() loop unchanged.
+ * FOC_Step() forces theta_elec = 0, applies v_d = v_cal / v_q = 0 for
+ * settle_time_s seconds, then reads theta_mech, writes hw->theta_mech_offset
+ * and hw->theta_elec_offset, and switches r->mode back to FOC_MODE_VOLTAGE.
  *
- * Implementation pending — stub only.
+ * v_cal        — d-axis alignment voltage (V); 10–20 % of v_bus is typical.
+ * settle_time_s — time to hold before reading the encoder (s); must be long
+ *                 enough for the rotor to damp out (typically 0.5–2 s).
  */
-void FOC_Calibrate(FOC_Motor_t *motor);
+void FOC_Calibrate(FOC_Motor_t *motor, float v_cal, float settle_time_s);
 
 #endif /* FOC_H */

@@ -25,12 +25,12 @@ void FOC_Reset(void)
     FOC_PID_Reset(&foc_pid_pos);
 }
 
-void FOC_Calibrate(FOC_Motor_t *motor)
+void FOC_Calibrate(FOC_Motor_t *motor, float v_cal, float settle_time_s)
 {
-    /* TODO: drive v_d_ref to a known value in FOC_MODE_VOLTAGE, wait for
-       rotor settle, read theta_mech, compute and store
-       motor->hw.theta_elec_offset. */
-    (void)motor;
+    motor->hw.cal_v_d             = v_cal;
+    motor->hw.cal_steps_remaining = (uint32_t)(settle_time_s / motor->hw.Ts);
+    motor->ref.mode               = FOC_MODE_CALIBRATE;
+    FOC_Reset();
 }
 
 /* -------------------------------------------------------------------------
@@ -106,7 +106,13 @@ void FOC_Step(FOC_Motor_t *motor)
 
     /* --- Current feedback ------------------------------------------------ */
     FOC_Clarke(s->i_u, s->i_v, s->i_w, &s->i_alpha, &s->i_beta);
+    if (hw->phase_reversed) s->i_beta = -s->i_beta;
     FOC_Park(s->i_alpha, s->i_beta, sin_th, cos_th, &s->i_d, &s->i_q);
+
+    /* sin/cos used for the output path (InvPark).  Overridden to theta=0 by
+       FOC_MODE_CALIBRATE so the voltage vector is forced along phase U. */
+    float sin_out = sin_th;
+    float cos_out = cos_th;
 
     /* --- Control cascade ------------------------------------------------- */
     switch (r->mode) {
@@ -130,6 +136,22 @@ void FOC_Step(FOC_Motor_t *motor)
             FOC_CurrentCtrlComputation(motor);
             break;
 
+        case FOC_MODE_CALIBRATE:
+            sin_out = 0.0f;
+            cos_out = 1.0f;
+            if (hw->cal_steps_remaining > 0u) {
+                hw->cal_steps_remaining--;
+                o->v_d = hw->cal_v_d;
+                o->v_q = 0.0f;
+            } else {
+                hw->theta_mech_offset = s->theta_mech;
+                hw->theta_elec_offset = 0.0f;
+                r->mode = FOC_MODE_VOLTAGE;
+                o->v_d  = 0.0f;
+                o->v_q  = 0.0f;
+            }
+            break;
+
         default:
             o->v_d = 0.0f;
             o->v_q = 0.0f;
@@ -137,9 +159,14 @@ void FOC_Step(FOC_Motor_t *motor)
     }
 
     /* --- Output ---------------------------------------------------------- */
-    FOC_InvPark(o->v_d, o->v_q, sin_th, cos_th, &o->v_alpha, &o->v_beta);
+    FOC_InvPark(o->v_d, o->v_q, sin_out, cos_out, &o->v_alpha, &o->v_beta);
 
     FOC_SVPWM(o->v_alpha, o->v_beta, s->v_bus,
               hw->duty_max, hw->pwm_active_low,
               &o->duty_u, &o->duty_v, &o->duty_w);
+    if (hw->phase_reversed) {
+        float tmp  = o->duty_v;
+        o->duty_v  = o->duty_w;
+        o->duty_w  = tmp;
+    }
 }

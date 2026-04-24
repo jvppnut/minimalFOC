@@ -8,10 +8,11 @@
  * -------------------------------------------------------------------------- */
 typedef uint8_t FOC_CtrlMode_t;
 
-#define FOC_MODE_VOLTAGE  ((FOC_CtrlMode_t)0)  /* Direct dq voltage       — v_d_ref/v_q_ref  */
-#define FOC_MODE_TORQUE   ((FOC_CtrlMode_t)1)  /* Inner current loop only — i_q_ref drives   */
-#define FOC_MODE_VELOCITY ((FOC_CtrlMode_t)2)  /* Speed loop active       — omega_ref drives */
-#define FOC_MODE_POSITION ((FOC_CtrlMode_t)3)  /* Position loop active    — theta_ref drives */
+#define FOC_MODE_VOLTAGE   ((FOC_CtrlMode_t)0)  /* Direct dq voltage       — v_d_ref/v_q_ref  */
+#define FOC_MODE_TORQUE    ((FOC_CtrlMode_t)1)  /* Inner current loop only — i_q_ref drives   */
+#define FOC_MODE_VELOCITY  ((FOC_CtrlMode_t)2)  /* Speed loop active       — omega_ref drives */
+#define FOC_MODE_POSITION  ((FOC_CtrlMode_t)3)  /* Position loop active    — theta_ref drives */
+#define FOC_MODE_CALIBRATE ((FOC_CtrlMode_t)4)  /* Electrical angle offset calibration        */
 
 /* --------------------------------------------------------------------------
  * Physical motor constants
@@ -31,7 +32,8 @@ typedef struct {
 
 /* --------------------------------------------------------------------------
  * Inverter and system calibration
- * Set once at initialisation. Never written during operation.
+ * Most fields are set once at initialisation.  The cal_* fields are written
+ * by FOC_Calibrate() and consumed / cleared by FOC_Step().
  * -------------------------------------------------------------------------- */
 typedef struct {
     float  Ts;                /* Control loop sampling period   (s)        */
@@ -51,6 +53,16 @@ typedef struct {
      * theta_mech in FOC_MotorState_t always stores the raw sensor value.  */
     float  theta_mech_offset; /* Mechanical zero offset (robot link) (rad) */
     float  theta_elec_offset; /* Electrical zero offset (encoder cal) (rad)*/
+
+    /* Non-zero if phase V and W are wired in reverse order (UWV instead of UVW).
+     * Corrected by FOC_Step(): negates i_beta after Clarke, swaps duty_v/duty_w
+     * after SVPWM.  Set by the direction-check calibration phase (future) or
+     * manually if the wiring is known. */
+    uint8_t  phase_reversed;
+
+    /* Calibration state — written by FOC_Calibrate(), consumed by FOC_Step(). */
+    uint32_t cal_steps_remaining; /* Settle countdown; 0 = calibration complete */
+    float    cal_v_d;             /* d-axis voltage applied during alignment (V) */
 } FOC_HWConfig_t;
 
 /* --------------------------------------------------------------------------
