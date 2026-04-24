@@ -14,7 +14,7 @@ void FOC_Sim_SetMotorParams(float Rs, float Ld, float Lq, float lambda_pm,
 /* Inverter and calibration configuration. */
 void FOC_Sim_SetHWConfig(float Ts, float dead_time, float v_bus_nominal,
                           float duty_max, uint8_t pwm_active_low,
-                          float theta_mech_offset, float theta_elec_offset);
+                          float theta_elec_offset);
 
 /* PID gains for each axis (discrete-scaled, caller's choice of method). */
 void FOC_Sim_SetPIDGains_Id   (float Kp, float Ki, float Kd, float out_min, float out_max);
@@ -32,14 +32,25 @@ void FOC_Sim_SetRef(float v_d_ref, float v_q_ref, float i_d_ref,
 /* Reset all PID integrators without changing gains or limits. */
 void FOC_Sim_Reset(void);
 
+/* Arm electrical angle offset calibration. Switches mode to FOC_MODE_CALIBRATE
+   and stores calibration parameters. Normal FOC_Sim_Step() calls continue
+   unchanged; FOC_Step() handles the settle countdown internally. */
+void FOC_Sim_Calibrate(float v_cal, float settle_time_s);
+
+/* Read the current control mode (FOC_MODE_* constant from foc_motor.h).
+   Poll this to detect when FOC_MODE_CALIBRATE has completed. */
+uint8_t FOC_Sim_GetMode(void);
+
 /*
  * Run one FOC step.
- * Inputs : phase currents (A), rotor angle (rad), angular velocity (rad/s),
+ * Inputs : phase currents (A), single-turn encoder angle (rad),
+ *          multi-turn mechanical angle (rad), angular velocity (rad/s),
  *          DC bus voltage (V).
  * Outputs: PWM duty cycles [0, 1] for all three phases.
  */
 void FOC_Sim_Step(float i_u, float i_v, float i_w,
-                  float theta_mech, float omega_mech, float v_bus,
+                  float theta_mech_raw, float theta_mech,
+                  float omega_mech, float v_bus,
                   float *duty_u, float *duty_v, float *duty_w);
 
 /*

@@ -47,12 +47,16 @@ typedef struct {
     uint8_t  pwm_active_low; /* Non-zero if the MCU PWM output is active-low.
                                  Duties are inverted (1 - duty) before output. */
 
-    /* Angle offsets applied by the FOC before use:
-     *   theta_elec = (theta_mech - theta_mech_offset) * pole_pairs
-     *                + theta_elec_offset
-     * theta_mech in FOC_MotorState_t always stores the raw sensor value.  */
-    float  theta_mech_offset; /* Mechanical zero offset (robot link) (rad) */
-    float  theta_elec_offset; /* Electrical zero offset (encoder cal) (rad)*/
+    /* Electrical angle (electrical radians), derived from the single-turn encoder:
+     *   theta_elec = theta_mech_raw * pole_pairs + theta_elec_offset
+     * theta_elec_offset is written by FOC_Calibrate() and is power-cycle persistent
+     * (independent of the multi-turn software counter). */
+    float  theta_elec_offset; /* Electrical zero offset, encoder cal  (rad) */
+
+    /* Mechanical zero for joint-level position control.
+     * Not used in the electrical angle path.
+     * Set once at robot homing; consumed by FOC_PositionCtrlComputation(). */
+    float  theta_mech_offset; /* Joint mechanical zero offset         (rad) */
 
     /* Non-zero if phase V and W are wired in reverse order (UWV instead of UVW).
      * Corrected by FOC_Step(): negates i_beta after Clarke, swaps duty_v/duty_w
@@ -75,8 +79,9 @@ typedef struct {
  *   theta_elec, i_alpha, i_beta, i_d, i_q
  * -------------------------------------------------------------------------- */
 typedef struct {
-    float  theta_mech;  /* Raw encoder angle              (rad)            */
-    float  theta_elec;  /* Electrical angle, offset-applied (rad)          */
+    float  theta_mech_raw; /* Single-turn encoder angle [0, 2π)  (rad)      */
+    float  theta_mech;     /* Multi-turn mechanical angle        (rad)      */
+    float  theta_elec;     /* Electrical angle, offset-applied  (rad)      */
     float  omega_mech;  /* Mechanical angular velocity    (rad/s)          */
     float  i_u;         /* Phase U current                (A)              */
     float  i_v;         /* Phase V current                (A)              */

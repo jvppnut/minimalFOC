@@ -26,14 +26,13 @@ void FOC_Sim_SetMotorParams(float Rs, float Ld, float Lq, float lambda_pm,
 
 void FOC_Sim_SetHWConfig(float Ts, float dead_time, float v_bus_nominal,
                           float duty_max, uint8_t pwm_active_low,
-                          float theta_mech_offset, float theta_elec_offset)
+                          float theta_elec_offset)
 {
     sim_motor.hw.Ts                = Ts;
     sim_motor.hw.dead_time         = dead_time;
     sim_motor.hw.v_bus_nominal     = v_bus_nominal;
     sim_motor.hw.duty_max          = duty_max;
     sim_motor.hw.pwm_active_low    = pwm_active_low;
-    sim_motor.hw.theta_mech_offset = theta_mech_offset;
     sim_motor.hw.theta_elec_offset = theta_elec_offset;
 }
 
@@ -78,16 +77,28 @@ void FOC_Sim_Reset(void)
     FOC_Reset();
 }
 
+void FOC_Sim_Calibrate(float v_cal, float settle_time_s)
+{
+    FOC_Calibrate(&sim_motor, v_cal, settle_time_s);
+}
+
+uint8_t FOC_Sim_GetMode(void)
+{
+    return (uint8_t)sim_motor.ref.mode;
+}
+
 void FOC_Sim_Step(float i_u, float i_v, float i_w,
-                  float theta_mech, float omega_mech, float v_bus,
+                  float theta_mech_raw, float theta_mech,
+                  float omega_mech, float v_bus,
                   float *duty_u, float *duty_v, float *duty_w)
 {
-    sim_motor.state.i_u        = i_u;
-    sim_motor.state.i_v        = i_v;
-    sim_motor.state.i_w        = i_w;
-    sim_motor.state.theta_mech = theta_mech;
-    sim_motor.state.omega_mech = omega_mech;
-    sim_motor.state.v_bus      = v_bus;
+    sim_motor.state.i_u            = i_u;
+    sim_motor.state.i_v            = i_v;
+    sim_motor.state.i_w            = i_w;
+    sim_motor.state.theta_mech_raw = theta_mech_raw;
+    sim_motor.state.theta_mech     = theta_mech;
+    sim_motor.state.omega_mech     = omega_mech;
+    sim_motor.state.v_bus          = v_bus;
 
     FOC_Step(&sim_motor);
 

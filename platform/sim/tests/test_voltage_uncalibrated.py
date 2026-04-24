@@ -18,7 +18,7 @@ import platform
 import numpy as np
 import matplotlib.pyplot as plt
 from simulator import (MotorParams, HWConfig, PIDGains,
-                       FOCSimulator, FOC_MODE_VOLTAGE)
+                       FOCSimulator, VirtualPositionSensor, FOC_MODE_VOLTAGE)
 
 # ---------------------------------------------------------------------------
 # Library path
@@ -68,11 +68,11 @@ def ref_fn(t):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-sim = FOCSimulator(motor, hw, LIB_PATH, Ts_sim=Ts_sim)
+sensor = VirtualPositionSensor(motor.pole_pairs, elec_offset_rad=ANGLE_OFFSET)
+sim = FOCSimulator(motor, hw, LIB_PATH, sensor=sensor, Ts_sim=Ts_sim)
 sim.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
 
-log = sim.run(duration=0.5, mode=FOC_MODE_VOLTAGE, ref_fn=ref_fn,
-              virtual_elec_offset=ANGLE_OFFSET)
+log = sim.run(duration=0.5, mode=FOC_MODE_VOLTAGE, ref_fn=ref_fn)
 
 # ---------------------------------------------------------------------------
 # Plot

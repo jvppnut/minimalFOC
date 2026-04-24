@@ -74,11 +74,14 @@ void FOC_VelocityCtrlComputation(FOC_Motor_t *motor)
 
 void FOC_PositionCtrlComputation(FOC_Motor_t *motor)
 {
-    FOC_MotorState_t *s = &motor->state;
-    FOC_MotorRef_t   *r = &motor->ref;
+    FOC_MotorState_t  *s  = &motor->state;
+    FOC_MotorRef_t    *r  = &motor->ref;
+    FOC_HWConfig_t    *hw = &motor->hw;
+
+    float theta_mech_true = s->theta_mech - hw->theta_mech_offset;
 
     /* Shortest-path position error, wrapped to (−π, π]. */
-    float pos_err = FOC_WrapToPi(r->theta_ref - s->theta_mech);
+    float pos_err = FOC_WrapToPi(r->theta_ref - theta_mech_true);
 
     /* PD: output = Kp*err - Kd*omega_mech.
        FOC_PID_Update applies the negative sign on meas_dot internally. */
@@ -98,8 +101,7 @@ void FOC_Step(FOC_Motor_t *motor)
     FOC_MotorParams_t *p = &motor->params;
 
     /* --- Electrical angle ------------------------------------------------ */
-    s->theta_elec = (s->theta_mech - hw->theta_mech_offset) * (float)p->pole_pairs
-                    + hw->theta_elec_offset;
+    s->theta_elec = s->theta_mech_raw * (float)p->pole_pairs + hw->theta_elec_offset;
 
     float sin_th, cos_th;
     FOC_Math_SinCos(s->theta_elec, &sin_th, &cos_th);
@@ -144,8 +146,8 @@ void FOC_Step(FOC_Motor_t *motor)
                 o->v_d = hw->cal_v_d;
                 o->v_q = 0.0f;
             } else {
-                hw->theta_mech_offset = s->theta_mech;
-                hw->theta_elec_offset = 0.0f;
+                hw->theta_elec_offset = FOC_WrapToPi(
+                    -(s->theta_mech_raw * (float)p->pole_pairs));
                 r->mode = FOC_MODE_VOLTAGE;
                 o->v_d  = 0.0f;
                 o->v_q  = 0.0f;

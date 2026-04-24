@@ -25,10 +25,11 @@ _SQRT3_OVER_2   = np.sqrt(3.0) / 2.0
 _ONE_OVER_SQRT3 = 1.0 / np.sqrt(3.0)
 
 # FOC mode constants — must stay in sync with foc_motor.h
-FOC_MODE_VOLTAGE  = 0
-FOC_MODE_TORQUE   = 1
-FOC_MODE_VELOCITY = 2
-FOC_MODE_POSITION = 3
+FOC_MODE_VOLTAGE   = 0
+FOC_MODE_TORQUE    = 1
+FOC_MODE_VELOCITY  = 2
+FOC_MODE_POSITION  = 3
+FOC_MODE_CALIBRATE = 4
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +52,12 @@ class MotorParams:
 
 class HWConfig:
     def __init__(self, Ts, dead_time, v_bus_nominal, duty_max,
-                 pwm_active_low=False, theta_mech_offset=0.0, theta_elec_offset=0.0):
+                 pwm_active_low=False, theta_elec_offset=0.0):
         self.Ts                = float(Ts)
         self.dead_time         = float(dead_time)
         self.v_bus_nominal     = float(v_bus_nominal)
         self.duty_max          = float(duty_max)
         self.pwm_active_low    = bool(pwm_active_low)
-        self.theta_mech_offset = float(theta_mech_offset)
         self.theta_elec_offset = float(theta_elec_offset)
 
 
@@ -68,6 +68,30 @@ class PIDGains:
         self.Kd      = float(Kd)
         self.out_min = float(out_min)
         self.out_max = float(out_max)
+
+
+class VirtualPositionSensor:
+    """
+    Simulated single-turn position sensor.
+
+    Wraps the true multi-turn mechanical angle to [0, 2π) and injects an
+    electrical angle offset to emulate encoder misalignment.  This matches
+    what a real absolute encoder (e.g. AS5600) would report on an STM32.
+
+    Parameters
+    ----------
+    pole_pairs       : int   — motor pole pairs
+    elec_offset_rad  : float — electrical angle offset to inject (rad);
+                               positive = encoder reads ahead of true angle
+    """
+    def __init__(self, pole_pairs: int, elec_offset_rad: float = 0.0):
+        self.pole_pairs      = int(pole_pairs)
+        self.elec_offset_rad = float(elec_offset_rad)
+
+    def read(self, theta_mech_true: float) -> float:
+        """Return single-turn encoder reading [0, 2π) with injected offset."""
+        mech_offset = self.elec_offset_rad / self.pole_pairs
+        return (theta_mech_true + mech_offset) % (2.0 * np.pi)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +195,7 @@ class FOCLib:
         f.FOC_Sim_SetMotorParams.argtypes = [cf, cf, cf, cf, cu, cf, cf, cf, cf]
         f.FOC_Sim_SetMotorParams.restype  = None
 
-        f.FOC_Sim_SetHWConfig.argtypes = [cf, cf, cf, cf, cu, cf, cf]
+        f.FOC_Sim_SetHWConfig.argtypes = [cf, cf, cf, cf, cu, cf]
         f.FOC_Sim_SetHWConfig.restype  = None
 
         for name in ('FOC_Sim_SetPIDGains_Id',    'FOC_Sim_SetPIDGains_Iq',
@@ -189,7 +213,13 @@ class FOCLib:
         f.FOC_Sim_Reset.argtypes = []
         f.FOC_Sim_Reset.restype  = None
 
-        f.FOC_Sim_Step.argtypes = [cf, cf, cf, cf, cf, cf, cp, cp, cp]
+        f.FOC_Sim_Calibrate.argtypes = [cf, cf]
+        f.FOC_Sim_Calibrate.restype  = None
+
+        f.FOC_Sim_GetMode.argtypes = []
+        f.FOC_Sim_GetMode.restype  = cu
+
+        f.FOC_Sim_Step.argtypes = [cf, cf, cf, cf, cf, cf, cf, cp, cp, cp]
         f.FOC_Sim_Step.restype  = None
 
         f.FOC_Sim_GetInternals.argtypes = [cp] * 9
@@ -204,7 +234,7 @@ class FOCLib:
             p.J, p.Dm, p.rated_current, p.rated_speed)
         self._lib.FOC_Sim_SetHWConfig(
             hw.Ts, hw.dead_time, hw.v_bus_nominal, hw.duty_max,
-            int(hw.pwm_active_low), hw.theta_mech_offset, hw.theta_elec_offset)
+            int(hw.pwm_active_low), hw.theta_elec_offset)
         self._lib.FOC_Sim_Init()
 
     def set_pid_gains(self, pid_id: PIDGains, pid_iq: PIDGains,
@@ -231,10 +261,16 @@ class FOCLib:
     def reset(self):
         self._lib.FOC_Sim_Reset()
 
-    def step(self, i_u, i_v, i_w, theta_mech, omega_mech, v_bus):
+    def calibrate(self, v_cal: float, settle_time_s: float):
+        self._lib.FOC_Sim_Calibrate(v_cal, settle_time_s)
+
+    def get_mode(self) -> int:
+        return int(self._lib.FOC_Sim_GetMode())
+
+    def step(self, i_u, i_v, i_w, theta_mech_raw, theta_mech, omega_mech, v_bus):
         du, dv, dw = ctypes.c_float(), ctypes.c_float(), ctypes.c_float()
         self._lib.FOC_Sim_Step(
-            i_u, i_v, i_w, theta_mech, omega_mech, v_bus,
+            i_u, i_v, i_w, theta_mech_raw, theta_mech, omega_mech, v_bus,
             ctypes.byref(du), ctypes.byref(dv), ctypes.byref(dw))
         return du.value, dv.value, dw.value
 
@@ -250,118 +286,153 @@ class FOCLib:
 # Simulator
 # ---------------------------------------------------------------------------
 
+def _stack_samples(samples):
+    """Convert a list of scalar sample dicts into a dict of numpy arrays."""
+    return {k: np.array([s[k] for s in samples]) for k in samples[0]}
+
+
 class FOCSimulator:
     """
     Closed-loop simulation: Python PMSM model (UVW frame) + compiled C FOC_Step().
+
+    Two usage modes
+    ---------------
+    Step-based (multi-phase tests):
+        sensor = VirtualPositionSensor(pole_pairs=7, elec_offset_rad=...)
+        sim = FOCSimulator(motor, hw, LIB_PATH, sensor=sensor, Ts_sim=Ts_sim)
+        sim.reset()
+        sim.foc.set_mode(...)
+        for each step:
+            sim.foc.set_ref(...)
+            sample = sim.step(load_torque=...)
+        log = _stack_samples(collected_samples)
+
+    Run-based (single-phase tests, backwards-compatible):
+        log = sim.run(duration, mode, ref_fn=...)
     """
 
     def __init__(self, motor_params: MotorParams, hw: HWConfig, lib_path: str,
-                 Ts_sim: float = None):
+                 sensor: VirtualPositionSensor = None, Ts_sim: float = None):
         self.motor_params = motor_params
         self.hw           = hw
-        # Ts_sim can be finer than hw.Ts for Euler accuracy; defaults to hw.Ts (no sub-stepping).
         self.Ts_sim       = float(Ts_sim) if Ts_sim is not None else hw.Ts
+        self._n_sub       = max(1, round(hw.Ts / self.Ts_sim))
+        # Default: ideal sensor with no offset.
+        self.sensor       = sensor if sensor is not None \
+                            else VirtualPositionSensor(motor_params.pole_pairs)
         self.foc          = FOCLib(lib_path)
         self.foc.init(motor_params, hw)
+
+        # Mutable simulation state — reset() reinitialises these.
+        self.motor    = PMSMModel(motor_params)
+        self._duty_u  = 0.5
+        self._duty_v  = 0.5
+        self._duty_w  = 0.5
+        self._t       = 0.0
 
     def set_pid_gains(self, pid_id, pid_iq, pid_speed, pid_pos):
         self.foc.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
 
-    def run(self, duration, mode, ref_kwargs=None,
-            load_torque=0.0, virtual_elec_offset=0.0, ref_fn=None):
+    def reset(self):
+        """Reset motor model, duty cycles, time counter, and PID integrators."""
+        self.motor   = PMSMModel(self.motor_params)
+        self._duty_u = 0.5
+        self._duty_v = 0.5
+        self._duty_w = 0.5
+        self._t      = 0.0
+        self.foc.reset()
+
+    def step(self, load_torque=0.0):
         """
-        Run a closed-loop simulation.
+        Advance one Ts_hw control step.
+
+        The active mode and references must be set on self.foc before calling.
+        The position sensor (self.sensor) is read each step; swap it out between
+        phases to change the injected offset without restarting the simulation.
+
+        Returns a dict of scalar signal values for this step.
+        """
+        p   = self.motor_params
+        hw  = self.hw
+
+        # Sub-step motor physics at Ts_sim with previous cycle's duty cycles (ZOH).
+        for _ in range(self._n_sub):
+            self.motor.step(self._duty_u, self._duty_v, self._duty_w,
+                            hw.v_bus_nominal, self.Ts_sim, load_torque)
+
+        # Single-turn encoder reading [0, 2π) with any injected offset.
+        theta_mech_raw = self.sensor.read(self.motor.theta_mech)
+
+        # Run compiled C FOC step.
+        self._duty_u, self._duty_v, self._duty_w = self.foc.step(
+            self.motor.i_u, self.motor.i_v, self.motor.i_w,
+            theta_mech_raw, self.motor.theta_mech, self.motor.omega_mech,
+            hw.v_bus_nominal)
+
+        ins = self.foc.get_internals()
+        t   = self._t
+        self._t += hw.Ts
+
+        return {
+            'time':              t,
+            'theta_mech':        self.motor.theta_mech,
+            'theta_mech_single': self.motor.theta_mech % (2.0 * np.pi),
+            'theta_mech_raw':    theta_mech_raw,
+            'omega_mech':        self.motor.omega_mech,
+            'i_u':               self.motor.i_u,
+            'i_v':               self.motor.i_v,
+            'i_w':               self.motor.i_w,
+            'i_d':               ins['i_d'],
+            'i_q':               ins['i_q'],
+            'v_d':               ins['v_d'],
+            'v_q':               ins['v_q'],
+            'duty_u':            self._duty_u,
+            'duty_v':            self._duty_v,
+            'duty_w':            self._duty_w,
+            'theta_elec_true':   (self.motor.theta_mech * p.pole_pairs) % (2.0 * np.pi),
+            'theta_elec_foc':    ins['theta_elec'] % (2.0 * np.pi),
+        }
+
+    def run(self, duration, mode, ref_kwargs=None, load_torque=0.0, ref_fn=None):
+        """
+        Run a closed-loop simulation from a clean state.
+
+        The injected encoder offset (if any) comes from self.sensor.
 
         Parameters
         ----------
-        duration            : float    — simulation duration (s)
-        mode                : int      — FOC_MODE_* constant
-        ref_kwargs          : dict     — constant reference fields; ignored when
-                                         ref_fn is provided
-        load_torque         : float    — constant mechanical load torque (N·m)
-        virtual_elec_offset : float    — electrical angle offset injected into the
-                                         virtual position sensor (rad). Simulates an
-                                         uncalibrated encoder: the FOC sees
-                                         theta_e + virtual_elec_offset while the motor
-                                         physics use the true theta_e.
-        ref_fn              : callable — ref_fn(t) -> dict; if provided, called each
-                                         step to update the reference (e.g. square wave).
-                                         Overrides ref_kwargs.
+        duration   : float    — simulation duration (s)
+        mode       : int      — FOC_MODE_* constant
+        ref_kwargs : dict     — constant reference fields; ignored when ref_fn given
+        load_torque: float    — constant mechanical load torque (N·m)
+        ref_fn     : callable — ref_fn(t) -> dict; updates reference each step
 
         Returns
         -------
         dict of numpy arrays keyed by signal name.
         """
-        Ts_hw  = self.hw.Ts
-        Ts_sim = self.Ts_sim
-        n_sub  = max(1, round(Ts_hw / Ts_sim))   # physics sub-steps per FOC step
-        n      = int(duration / Ts_hw)
-        p      = self.motor_params
-
+        n          = int(duration / self.hw.Ts)
         static_ref = ref_kwargs or {}
 
-        self.foc.reset()
+        self.reset()
         self.foc.set_mode(mode)
         if ref_fn is None:
             self.foc.set_ref(**static_ref)
 
-        motor = PMSMModel(self.motor_params)
-        keys  = ('time', 'theta_mech', 'omega_mech',
-                 'i_u', 'i_v', 'i_w',
-                 'i_d', 'i_q', 'v_d', 'v_q',
-                 'duty_u', 'duty_v', 'duty_w',
-                 'theta_elec_true', 'theta_elec_foc',
-                 'v_q_ref', 'i_q_ref')
-        log   = {k: np.zeros(n) for k in keys}
-
-        duty_u = duty_v = duty_w = 0.5   # zero voltage at start
-
-        for i in range(n):
-            t = i * Ts_hw
-
+        samples = []
+        for _ in range(n):
             if ref_fn is not None:
-                ref = ref_fn(t)
+                ref = ref_fn(self._t)
                 self.foc.set_ref(**ref)
             else:
                 ref = static_ref
 
-            # Sub-step motor physics at Ts_sim with previous cycle's duty cycles.
-            # FOC holds its output constant across all sub-steps (ZOH).
-            for _ in range(n_sub):
-                motor.step(duty_u, duty_v, duty_w,
-                           self.hw.v_bus_nominal, Ts_sim, load_torque)
+            sample = self.step(load_torque=load_torque)
+            sample['v_q_ref'] = ref.get('v_q_ref', 0.0)
+            sample['i_q_ref'] = ref.get('i_q_ref', 0.0)
+            samples.append(sample)
 
-            # Virtual sensor: report theta_mech with an electrical angle offset.
-            # The mechanical equivalent of the electrical offset is offset/pole_pairs.
-            theta_mech_sensor = motor.theta_mech + virtual_elec_offset / p.pole_pairs
-
-            # Run compiled C FOC step once per hw.Ts period
-            duty_u, duty_v, duty_w = self.foc.step(
-                motor.i_u, motor.i_v, motor.i_w,
-                theta_mech_sensor, motor.omega_mech,
-                self.hw.v_bus_nominal)
-
-            ins = self.foc.get_internals()
-
-            log['time'][i]            = t
-            log['theta_mech'][i]      = motor.theta_mech
-            log['omega_mech'][i]      = motor.omega_mech
-            log['i_u'][i]             = motor.i_u
-            log['i_v'][i]             = motor.i_v
-            log['i_w'][i]             = motor.i_w
-            log['i_d'][i]             = ins['i_d']
-            log['i_q'][i]             = ins['i_q']
-            log['v_d'][i]             = ins['v_d']
-            log['v_q'][i]             = ins['v_q']
-            log['duty_u'][i]          = duty_u
-            log['duty_v'][i]          = duty_v
-            log['duty_w'][i]          = duty_w
-            log['theta_elec_true'][i] = motor.theta_mech * p.pole_pairs
-            log['theta_elec_foc'][i]  = ins['theta_elec']
-            log['v_q_ref'][i]         = ref.get('v_q_ref', 0.0)
-            log['i_q_ref'][i]         = ref.get('i_q_ref', 0.0)
-
-        return log
+        return _stack_samples(samples)
 
     @staticmethod
     def plot(log, title='FOC Simulation'):
