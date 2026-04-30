@@ -61,4 +61,50 @@
    Current setting: cutoff = 200 Hz, Ts = 50 µs → exp(-2π×200×50e-6) ≈ 0.9394 */
 #define FOC_ESTIMATOR_LPF_ALPHA 0.9394f
 
+/* --------------------------------------------------------------------------
+ * DRV8323R gate driver
+ *
+ * Gate drive current codes — peak drive current per datasheet table.
+ * Approximate source (IDRIVEP): 0→10mA  4→120mA  8→260mA  15→1000mA  verify
+ * Approximate sink   (IDRIVEN): 0→20mA  4→240mA  8→520mA  15→2000mA  verify
+ *
+ * dead_time [0-4]: 0→100ns 1→200ns 2→400ns 3→800ns 4→1000ns           verify
+ * ocp_mode  [0-3]: 0→latch 1→retry 2→report only 3→disabled            verify
+ * ocp_deg   [0-3]: 0→2µs 1→4µs 2→6µs 3→8µs                            verify
+ * vds_lvl   [0-3]: 0→0.06V 1→0.13V 2→0.20V 3→0.26V                    verify
+ * tdrive    [0-3]: 0→500ns 1→1000ns 2→2000ns 3→4000ns                  verify
+ * tretry    [0-1]: 0→4ms 1→50µs                                         verify
+ * sen_lvl   [0-7]: sense OCP threshold — see datasheet table            verify
+ * -------------------------------------------------------------------------- */
+
+/* Driver Control (0x02) */
+#define FOC_DRV8323_PWM_MODE        DRV8323_PWM_3X  /* 3x PWM               */
+#define FOC_DRV8323_DIS_CPUV        0u
+#define FOC_DRV8323_DIS_GDF         0u
+#define FOC_DRV8323_OTW_REP         1u
+
+/* Gate Drive HS (0x03) */
+#define FOC_DRV8323_IDRIVEP_HS      8u              /* ~260 mA source       */
+#define FOC_DRV8323_IDRIVEN_HS      8u              /* ~520 mA sink         */
+
+/* Gate Drive LS (0x04) */
+#define FOC_DRV8323_IDRIVEP_LS      8u
+#define FOC_DRV8323_IDRIVEN_LS      8u
+#define FOC_DRV8323_TDRIVE          1u              /* 1000 ns              */
+
+/* OCP Control (0x05) */
+#define FOC_DRV8323_TRETRY          0u              /* 4 ms                 */
+#define FOC_DRV8323_DEAD_TIME       2u              /* 400 ns               */
+#define FOC_DRV8323_OCP_MODE        0u              /* latch                */
+#define FOC_DRV8323_OCP_DEG         1u              /* 4 µs                 */
+#define FOC_DRV8323_VDS_LVL         2u              /* 0.20 V               */
+
+/* CSA Control (0x06) */
+#define FOC_DRV8323_CSA_GAIN        DRV8323_CSA_GAIN_40X  /* 40 V/V         */
+#define FOC_DRV8323_VREF_DIV        0u
+#define FOC_DRV8323_LS_REF          0u
+#define FOC_DRV8323_CSA_FET         0u              /* sense across shunt   */
+#define FOC_DRV8323_DIS_SEN         0u
+#define FOC_DRV8323_SEN_LVL         0u
+
 #endif /* FOC_CONFIG_H */
