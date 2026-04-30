@@ -80,18 +80,26 @@ class VirtualPositionSensor:
 
     Parameters
     ----------
-    pole_pairs       : int   — motor pole pairs
-    elec_offset_rad  : float — electrical angle offset to inject (rad);
-                               positive = encoder reads ahead of true angle
+    pole_pairs       : int        — motor pole pairs
+    elec_offset_rad  : float      — electrical angle offset to inject (rad);
+                                    positive = encoder reads ahead of true angle
+    bits             : int | None — encoder resolution in bits (e.g. 14 for
+                                    16384 counts/rev); None = ideal (no quantization)
     """
-    def __init__(self, pole_pairs: int, elec_offset_rad: float = 0.0):
+    def __init__(self, pole_pairs: int, elec_offset_rad: float = 0.0,
+                 bits: int = None):
         self.pole_pairs      = int(pole_pairs)
         self.elec_offset_rad = float(elec_offset_rad)
+        self.bits            = bits
+        self._lsb            = (2.0 * np.pi) / (1 << bits) if bits is not None else None
 
     def read(self, theta_mech_true: float) -> float:
-        """Return single-turn encoder reading [0, 2π) with injected offset."""
+        """Return single-turn encoder reading [0, 2π) with injected offset and optional quantization."""
         mech_offset = self.elec_offset_rad / self.pole_pairs
-        return (theta_mech_true + mech_offset) % (2.0 * np.pi)
+        theta = (theta_mech_true + mech_offset) % (2.0 * np.pi)
+        if self._lsb is not None:
+            theta = np.floor(theta / self._lsb) * self._lsb
+        return theta
 
 
 # ---------------------------------------------------------------------------
