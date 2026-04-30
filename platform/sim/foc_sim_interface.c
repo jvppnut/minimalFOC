@@ -1,5 +1,6 @@
 #include "foc_sim_interface.h"
 #include "foc.h"
+#include "core/estimator/foc_estimator.h"
 
 static FOC_Motor_t sim_motor;
 
@@ -76,6 +77,16 @@ void FOC_Sim_Reset(void)
     FOC_Reset();
 }
 
+void FOC_Sim_EstimatorReset(void)
+{
+    FOC_Estimator_Reset();
+}
+
+void FOC_Sim_EstimatorInit(float lpf_alpha)
+{
+    FOC_Estimator_Init(lpf_alpha, sim_motor.hw.Ts);
+}
+
 void FOC_Sim_Calibrate(float v_cal, float settle_time_s)
 {
     FOC_Calibrate(&sim_motor, v_cal, settle_time_s);
@@ -87,18 +98,16 @@ uint8_t FOC_Sim_GetMode(void)
 }
 
 void FOC_Sim_Step(float i_u, float i_v, float i_w,
-                  float theta_mech_raw, float theta_mech,
-                  float omega_mech, float v_bus,
+                  float theta_mech_raw, float v_bus,
                   float *duty_u, float *duty_v, float *duty_w)
 {
     sim_motor.state.i_u            = i_u;
     sim_motor.state.i_v            = i_v;
     sim_motor.state.i_w            = i_w;
     sim_motor.state.theta_mech_raw = theta_mech_raw;
-    sim_motor.state.theta_mech     = theta_mech;
-    sim_motor.state.omega_mech     = omega_mech;
     sim_motor.state.v_bus          = v_bus;
 
+    FOC_Estimator_Update(&sim_motor);
     FOC_Step(&sim_motor);
 
     *duty_u = sim_motor.out.duty_u;
@@ -121,4 +130,10 @@ void FOC_Sim_GetInternals(float *theta_elec,
     if (v_q)        *v_q        = sim_motor.out.v_q;
     if (v_alpha)    *v_alpha    = sim_motor.out.v_alpha;
     if (v_beta)     *v_beta     = sim_motor.out.v_beta;
+}
+
+void FOC_Sim_GetEstimatorState(float *theta_mech, float *omega_mech)
+{
+    if (theta_mech) *theta_mech = sim_motor.state.theta_mech;
+    if (omega_mech) *omega_mech = sim_motor.state.omega_mech;
 }

@@ -8,6 +8,7 @@ gcc -shared -O2 ^
     -I"%ROOT%" ^
     "%ROOT%\core\math\foc_math.c" ^
     "%ROOT%\core\math\foc_pid.c" ^
+    "%ROOT%\core\estimator\foc_estimator.c" ^
     "%ROOT%\foc.c" ^
     "%ROOT%\platform\sim\foc_sim_interface.c" ^
     -o "%OUT%" ^

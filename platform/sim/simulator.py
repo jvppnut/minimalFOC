@@ -213,21 +213,31 @@ class FOCLib:
         f.FOC_Sim_Reset.argtypes = []
         f.FOC_Sim_Reset.restype  = None
 
+        f.FOC_Sim_EstimatorReset.argtypes = []
+        f.FOC_Sim_EstimatorReset.restype  = None
+
+        f.FOC_Sim_EstimatorInit.argtypes = [cf]
+        f.FOC_Sim_EstimatorInit.restype  = None
+
         f.FOC_Sim_Calibrate.argtypes = [cf, cf]
         f.FOC_Sim_Calibrate.restype  = None
 
         f.FOC_Sim_GetMode.argtypes = []
         f.FOC_Sim_GetMode.restype  = cu
 
-        f.FOC_Sim_Step.argtypes = [cf, cf, cf, cf, cf, cf, cf, cp, cp, cp]
+        f.FOC_Sim_Step.argtypes = [cf, cf, cf, cf, cf, cp, cp, cp]
         f.FOC_Sim_Step.restype  = None
 
         f.FOC_Sim_GetInternals.argtypes = [cp] * 9
         f.FOC_Sim_GetInternals.restype  = None
 
+        f.FOC_Sim_GetEstimatorState.argtypes = [cp, cp]
+        f.FOC_Sim_GetEstimatorState.restype  = None
+
     # --- public API --------------------------------------------------------
 
-    def init(self, motor_params: MotorParams, hw: HWConfig):
+    def init(self, motor_params: MotorParams, hw: HWConfig,
+             estimator_lpf_alpha: float = 0.9394):
         p = motor_params
         self._lib.FOC_Sim_SetMotorParams(
             p.Rs, p.Ld, p.Lq, p.lambda_pm, p.pole_pairs,
@@ -236,6 +246,7 @@ class FOCLib:
             hw.Ts, hw.dead_time, hw.v_bus_nominal, hw.duty_max,
             int(hw.pwm_active_low), hw.theta_elec_offset)
         self._lib.FOC_Sim_Init()
+        self._lib.FOC_Sim_EstimatorInit(estimator_lpf_alpha)
 
     def set_pid_gains(self, pid_id: PIDGains, pid_iq: PIDGains,
                       pid_speed: PIDGains, pid_pos: PIDGains):
@@ -261,16 +272,19 @@ class FOCLib:
     def reset(self):
         self._lib.FOC_Sim_Reset()
 
+    def estimator_reset(self):
+        self._lib.FOC_Sim_EstimatorReset()
+
     def calibrate(self, v_cal: float, settle_time_s: float):
         self._lib.FOC_Sim_Calibrate(v_cal, settle_time_s)
 
     def get_mode(self) -> int:
         return int(self._lib.FOC_Sim_GetMode())
 
-    def step(self, i_u, i_v, i_w, theta_mech_raw, theta_mech, omega_mech, v_bus):
+    def step(self, i_u, i_v, i_w, theta_mech_raw, v_bus):
         du, dv, dw = ctypes.c_float(), ctypes.c_float(), ctypes.c_float()
         self._lib.FOC_Sim_Step(
-            i_u, i_v, i_w, theta_mech_raw, theta_mech, omega_mech, v_bus,
+            i_u, i_v, i_w, theta_mech_raw, v_bus,
             ctypes.byref(du), ctypes.byref(dv), ctypes.byref(dw))
         return du.value, dv.value, dw.value
 
@@ -280,6 +294,14 @@ class FOCLib:
         keys = ('theta_elec', 'i_alpha', 'i_beta',
                 'i_d', 'i_q', 'v_d', 'v_q', 'v_alpha', 'v_beta')
         return {k: v.value for k, v in zip(keys, vals)}
+
+    def get_estimator_state(self):
+        theta_mech = ctypes.c_float()
+        omega_mech = ctypes.c_float()
+        self._lib.FOC_Sim_GetEstimatorState(
+            ctypes.byref(theta_mech), ctypes.byref(omega_mech))
+        return {'theta_mech_est': theta_mech.value,
+                'omega_mech_est': omega_mech.value}
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +334,8 @@ class FOCSimulator:
     """
 
     def __init__(self, motor_params: MotorParams, hw: HWConfig, lib_path: str,
-                 sensor: VirtualPositionSensor = None, Ts_sim: float = None):
+                 sensor: VirtualPositionSensor = None, Ts_sim: float = None,
+                 estimator_lpf_alpha: float = 0.9394):
         self.motor_params = motor_params
         self.hw           = hw
         self.Ts_sim       = float(Ts_sim) if Ts_sim is not None else hw.Ts
@@ -321,7 +344,7 @@ class FOCSimulator:
         self.sensor       = sensor if sensor is not None \
                             else VirtualPositionSensor(motor_params.pole_pairs)
         self.foc          = FOCLib(lib_path)
-        self.foc.init(motor_params, hw)
+        self.foc.init(motor_params, hw, estimator_lpf_alpha)
 
         # Mutable simulation state — reset() reinitialises these.
         self.motor    = PMSMModel(motor_params)
@@ -334,13 +357,14 @@ class FOCSimulator:
         self.foc.set_pid_gains(pid_id, pid_iq, pid_speed, pid_pos)
 
     def reset(self):
-        """Reset motor model, duty cycles, time counter, and PID integrators."""
+        """Reset motor model, duty cycles, time counter, PID integrators, and estimator."""
         self.motor   = PMSMModel(self.motor_params)
         self._duty_u = 0.5
         self._duty_v = 0.5
         self._duty_w = 0.5
         self._t      = 0.0
         self.foc.reset()
+        self.foc.estimator_reset()
 
     def step(self, load_torque=0.0):
         """
@@ -363,22 +387,24 @@ class FOCSimulator:
         # Single-turn encoder reading [0, 2π) with any injected offset.
         theta_mech_raw = self.sensor.read(self.motor.theta_mech)
 
-        # Run compiled C FOC step.
+        # Run compiled C FOC step (estimator runs inside before FOC_Step).
         self._duty_u, self._duty_v, self._duty_w = self.foc.step(
             self.motor.i_u, self.motor.i_v, self.motor.i_w,
-            theta_mech_raw, self.motor.theta_mech, self.motor.omega_mech,
-            hw.v_bus_nominal)
+            theta_mech_raw, hw.v_bus_nominal)
 
         ins = self.foc.get_internals()
+        est = self.foc.get_estimator_state()
         t   = self._t
         self._t += hw.Ts
 
         return {
             'time':              t,
-            'theta_mech':        self.motor.theta_mech,
+            'theta_mech':        self.motor.theta_mech,        # physics ground truth
             'theta_mech_single': self.motor.theta_mech % (2.0 * np.pi),
             'theta_mech_raw':    theta_mech_raw,
-            'omega_mech':        self.motor.omega_mech,
+            'omega_mech':        self.motor.omega_mech,        # physics ground truth
+            'theta_mech_est':    est['theta_mech_est'],        # estimator output
+            'omega_mech_est':    est['omega_mech_est'],        # estimator output
             'i_u':               self.motor.i_u,
             'i_v':               self.motor.i_v,
             'i_w':               self.motor.i_w,
