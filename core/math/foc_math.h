@@ -81,14 +81,11 @@ static inline float FOC_Lerp(float a, float b, float t)
 }
 
 /* -------------------------------------------------------------------------
- * Trig — fast sin/cos via a 256-entry quarter-wave LUT + linear interpolation.
+ * Trig — fast sin/cos via a 512-entry full-wave LUT + linear interpolation.
  *
- * The LUT is module-private static data (analogous to ROM) and is intentionally
- * exempt from the no-global-mutable-state rule that applies to control-loop data.
- *
- * Call FOC_Math_InitTrig() once at startup before any Sin/Cos/SinCos call.
+ * The LUT is a const array placed in flash by the linker — no RAM cost,
+ * no init call required.
  * ---------------------------------------------------------------------- */
-void  FOC_Math_InitTrig(void);
 
 /* Preferred form — computes both in one table walk. */
 void  FOC_Math_SinCos(float angle_rad, float *sin_out, float *cos_out);

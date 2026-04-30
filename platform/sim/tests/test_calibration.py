@@ -135,12 +135,14 @@ t_ms         = log['time'] * 1e3
 t_cal_start_ms = t_cal_start * 1e3
 t_cal_end_ms   = t_cal_end   * 1e3
 
-theta_err_deg = np.degrees((log['theta_elec_foc'] - log['theta_elec_true']) % (2.0 * np.pi))
-
+#theta_err_deg = np.degrees((log['theta_elec_foc'] - log['theta_elec_true']) % (2.0 * np.pi))  # wrapped [0, 2pi): square waves post-cal
+#theta_err_deg = np.degrees(log['theta_elec_foc'] - log['theta_elec_true'])                     # raw subtraction: square waves pre/during-cal
+diff = log['theta_elec_foc'] - log['theta_elec_true']
+theta_err_deg = np.degrees(np.arctan2(np.sin(diff), np.cos(diff)))
 # ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(5, 1, figsize=(13, 14), sharex=True)
+fig, axes = plt.subplots(6, 1, figsize=(13, 16), sharex=True)
 fig.suptitle(
     f'Electrical angle calibration — {ELEC_OFFSET_DEG}° offset, '
     f'v_q = ±{VQ_AMP}V square {FREQ}Hz',
@@ -189,16 +191,25 @@ axes[3].set_ylabel('Mechanical angle (°)\n[0°, 360°)')
 axes[3].legend(loc='upper right', fontsize=8)
 axes[3].grid(True)
 
-# -- Electrical angle error [0°, 360°) — collapses to ~0° after calibration -
-axes[4].plot(t_ms, theta_err_deg, color='darkorange')
-axes[4].axhline(ELEC_OFFSET_DEG, color='gray', linewidth=0.8, linestyle=':',
-                label=f'pre-cal offset ({ELEC_OFFSET_DEG}°)')
-axes[4].axhline(0, color='k', linewidth=0.6, linestyle=':')
+# -- Electrical angles (true vs FOC) ------------------------------------------
+axes[4].plot(t_ms, np.degrees(log['theta_elec_true']), label='θ_e true', alpha=0.8)
+axes[4].plot(t_ms, np.degrees(log['theta_elec_foc']),  label='θ_e FOC',
+             linestyle='--', alpha=0.9)
 shade_phases(axes[4])
-axes[4].set_ylabel('θ_e error (°)\n(FOC − true) [0°, 360°)')
-axes[4].set_xlabel('Time (ms)')
+axes[4].set_ylabel('Electrical angle (°)\n[0°, 360°)')
 axes[4].legend(loc='upper right', fontsize=8)
 axes[4].grid(True)
+
+# -- Electrical angle error — collapses to ~0° after calibration --------------
+axes[5].plot(t_ms, theta_err_deg, color='darkorange')
+axes[5].axhline(ELEC_OFFSET_DEG, color='gray', linewidth=0.8, linestyle=':',
+                label=f'pre-cal offset ({ELEC_OFFSET_DEG}°)')
+axes[5].axhline(0, color='k', linewidth=0.6, linestyle=':')
+shade_phases(axes[5])
+axes[5].set_ylabel('θ_e error (°)\n(FOC − true)')
+axes[5].set_xlabel('Time (ms)')
+axes[5].legend(loc='upper right', fontsize=8)
+axes[5].grid(True)
 
 # Phase legend (shared)
 patches = [

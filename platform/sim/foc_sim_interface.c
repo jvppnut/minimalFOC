@@ -5,7 +5,6 @@ static FOC_Motor_t sim_motor;
 
 void FOC_Sim_Init(void)
 {
-    FOC_Math_InitTrig();
     FOC_Init();
 }
 
