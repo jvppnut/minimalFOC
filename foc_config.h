@@ -56,6 +56,13 @@
                                            low-side shunt current sensing.                */
 #define FOC_PWM_ACTIVE_LOW      0       /* 1 if MCU PWM output is active-low              */
 
+/* Current sensing — must match PCB shunt and DRV8323 CSA_GAIN register field.
+ * ADC_CSA_GAIN_VV must be consistent with FOC_DRV8323_CSA_GAIN (3 → 40 V/V). */
+#define FOC_ADC_VREF            3.3f    /* ADC reference voltage          (V)             */
+#define FOC_ADC_BITS            12      /* ADC resolution                 (bits)          */
+#define FOC_ADC_RSHUNT          3e-3f   /* Phase current shunt resistance (Ohm)           */
+#define FOC_ADC_CSA_GAIN_VV     40.0f   /* CSA amplifier gain — CSA_GAIN=3 → 40 V/V      */
+
 /* --------------------------------------------------------------------------
  * Calibration defaults
  * -------------------------------------------------------------------------- */
