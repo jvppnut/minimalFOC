@@ -35,10 +35,10 @@ void FOC_DRV8323_Init(FOC_SPI_Transfer_t spi_xfer)
     uint16_t reg;
 
     /* Driver Control (0x02) */
-    reg  = (uint16_t)(FOC_DRV8323_DIS_CPUV  & 0x1u) << 10u;
-    reg |= (uint16_t)(FOC_DRV8323_DIS_GDF   & 0x1u) << 9u;
-    reg |= (uint16_t)(FOC_DRV8323_OTW_REP   & 0x1u) << 8u;
-    reg |= (uint16_t)(FOC_DRV8323_PWM_MODE  & 0x3u) << 6u;
+    reg  = (uint16_t)(FOC_DRV8323_DIS_CPUV  & 0x1u) << 9u;
+    reg |= (uint16_t)(FOC_DRV8323_DIS_GDF   & 0x1u) << 8u;
+    reg |= (uint16_t)(FOC_DRV8323_OTW_REP   & 0x1u) << 7u;
+    reg |= (uint16_t)(FOC_DRV8323_PWM_MODE  & 0x3u) << 5u;
     drv_write(spi_xfer, DRV8323_REG_DRIVER_CTRL, reg);
 
     /* Gate Drive HS (0x03) */
@@ -47,17 +47,18 @@ void FOC_DRV8323_Init(FOC_SPI_Transfer_t spi_xfer)
     drv_write(spi_xfer, DRV8323_REG_GATE_DRIVE_HS, reg);
 
     /* Gate Drive LS (0x04) */
-    reg  = (uint16_t)(FOC_DRV8323_TDRIVE     & 0x3u) << 8u;
+    reg  = (uint16_t)(FOC_DRV8323_CBC        & 0x1u) << 10u;
+    reg |= (uint16_t)(FOC_DRV8323_TDRIVE     & 0x3u) << 8u;
     reg |= (uint16_t)(FOC_DRV8323_IDRIVEP_LS & 0xFu) << 4u;
     reg |= (uint16_t)(FOC_DRV8323_IDRIVEN_LS & 0xFu) << 0u;
     drv_write(spi_xfer, DRV8323_REG_GATE_DRIVE_LS, reg);
 
     /* OCP Control (0x05) */
-    reg  = (uint16_t)(FOC_DRV8323_TRETRY    & 0x1u) << 9u;
-    reg |= (uint16_t)(FOC_DRV8323_DEAD_TIME & 0x7u) << 6u;
-    reg |= (uint16_t)(FOC_DRV8323_OCP_MODE  & 0x3u) << 4u;
-    reg |= (uint16_t)(FOC_DRV8323_OCP_DEG   & 0x3u) << 2u;
-    reg |= (uint16_t)(FOC_DRV8323_VDS_LVL   & 0x3u) << 0u;
+    reg  = (uint16_t)(FOC_DRV8323_TRETRY    & 0x1u) << 10u;
+    reg |= (uint16_t)(FOC_DRV8323_DEAD_TIME & 0x3u) << 8u;
+    reg |= (uint16_t)(FOC_DRV8323_OCP_MODE  & 0x3u) << 6u;
+    reg |= (uint16_t)(FOC_DRV8323_OCP_DEG   & 0x3u) << 4u;
+    reg |= (uint16_t)(FOC_DRV8323_VDS_LVL   & 0xFu) << 0u;
     drv_write(spi_xfer, DRV8323_REG_OCP_CTRL, reg);
 
     /* CSA Control (0x06) */
@@ -73,5 +74,5 @@ void FOC_DRV8323_Init(FOC_SPI_Transfer_t spi_xfer)
 void FOC_DRV8323_ClearFaults(FOC_SPI_Transfer_t spi_xfer)
 {
     uint16_t reg = drv_read(spi_xfer, DRV8323_REG_DRIVER_CTRL);
-    drv_write(spi_xfer, DRV8323_REG_DRIVER_CTRL, reg | (1u << 1u));
+    drv_write(spi_xfer, DRV8323_REG_DRIVER_CTRL, reg | (1u << 0u));
 }

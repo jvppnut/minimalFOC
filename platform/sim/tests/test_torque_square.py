@@ -28,9 +28,12 @@ LIB_PATH = os.path.join(_here, '..', _lib)
 # Motor and hardware parameters
 # ---------------------------------------------------------------------------
 motor = MotorParams(
-    Rs=0.5, Ld=1e-3, Lq=1e-3, lambda_pm=0.01,
-    pole_pairs=7, J=1e-4, Dm=1e-4,
-    rated_current=5.0, rated_speed=200.0)
+    Rs=0.101, Ld=69e-6, Lq=69e-6,      # Y-equiv from delta LL measurements
+    lambda_pm=0.00371,                  # derived from Kt=0.078 Nm/A
+    pole_pairs=14,
+    J=2.435e-5,                         # rotor inertia from spec (kg·m²)
+    Dm=2.5e-5,                          # estimated (0.25x placeholder)
+    rated_current=6.5, rated_speed=264.0)  # CubeMars AK60-6 V1.1 (KV80)
 
 Ts_hw  = 50e-6    # 20 kHz control loop
 Ts_sim =  5e-6    # 200 kHz physics integration

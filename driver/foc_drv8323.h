@@ -47,7 +47,7 @@
 #define DRV8323_FS2_SB_OC       (1u << 9)
 #define DRV8323_FS2_SC_OC       (1u << 8)
 #define DRV8323_FS2_OTW         (1u << 7)
-#define DRV8323_FS2_GDUV        (1u << 6)
+#define DRV8323_FS2_CPUV        (1u << 6)
 #define DRV8323_FS2_VGS_HA      (1u << 5)
 #define DRV8323_FS2_VGS_LA      (1u << 4)
 #define DRV8323_FS2_VGS_HB      (1u << 3)
@@ -56,7 +56,7 @@
 #define DRV8323_FS2_VGS_LC      (1u << 0)
 
 /* --------------------------------------------------------------------------
- * PWM mode field values — Driver Control bits [7:6]         verify
+ * PWM mode field values — Driver Control bits [6:5]
  * -------------------------------------------------------------------------- */
 #define DRV8323_PWM_6X          0u
 #define DRV8323_PWM_3X          1u
