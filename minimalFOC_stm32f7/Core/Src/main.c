@@ -229,7 +229,7 @@ int main(void)
 
   // Voltage-mode open-loop test: Vd=0, Vq=1 V
   motor.ref.mode    = FOC_MODE_VOLTAGE;
-  motor.ref.v_d_ref = 9.0f;
+  motor.ref.v_d_ref = 2.0f;
   motor.ref.v_q_ref = 0.0f;
 
   FOC_Init();
@@ -263,8 +263,11 @@ int main(void)
          DRV8323_ReadReg(0x04), DRV8323_ReadReg(0x05),
          DRV8323_ReadReg(0x06));
 
+  // INLx HIGH (PC9)
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+
   // INLx LOW (PC9)
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
   HAL_TIM_Base_Start_IT(&htim1);
 
