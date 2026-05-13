@@ -1,6 +1,13 @@
+# Build outputs
 *.dll
 *.so
 *.o
 *.a
+
+# Python
 __pycache__/
 *.pyc
+
+# CubeIDE build artifacts
+minimalFOC_stm32f7/Debug/
+minimalFOC_stm32f7/Release/
