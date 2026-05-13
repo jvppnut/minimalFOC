@@ -136,9 +136,10 @@
  *           b[7]   = 1        OTW_REP (warn on nFAULT)
  *           b[6:5] = 01       PWM_MODE = 3x
  *
- *   0x03  Gate Drive HS   = 0x088  = 000_1000_1000b
- *           b[7:4] = 1000     IDRIVEP_HS = 8 (~260 mA source)
- *           b[3:0] = 1000     IDRIVEN_HS = 8 (~520 mA sink)
+ *   0x03  Gate Drive HS   = 0x388  = 011_1000_1000b
+ *           b[10:8] = 011     LOCK field (power-on default, not written by init)
+ *           b[7:4]  = 1000    IDRIVEP_HS = 8 (~260 mA source)
+ *           b[3:0]  = 1000    IDRIVEN_HS = 8 (~520 mA sink)
  *
  *   0x04  Gate Drive LS   = 0x588  = 101_1000_1000b
  *           b[10]  = 1        CBC = cycle-by-cycle (default, active in retry OCP mode)

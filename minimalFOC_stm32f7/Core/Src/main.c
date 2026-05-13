@@ -118,6 +118,15 @@ static void DRV8323_SPI_Transfer(const uint8_t *tx, uint8_t *rx, uint8_t len)
     if (rx) { rx[0] = (uint8_t)(rx16 >> 8); rx[1] = (uint8_t)(rx16 & 0xFF); }
 }
 
+static uint16_t DRV8323_ReadReg(uint8_t addr)
+{
+    uint16_t frame = (1u << 15u) | ((uint16_t)(addr & 0x0Fu) << 11u);
+    uint8_t tx[2] = { (uint8_t)(frame >> 8), (uint8_t)(frame & 0xFF) };
+    uint8_t rx[2] = { 0, 0 };
+    DRV8323_SPI_Transfer(tx, rx, 2);
+    return ((uint16_t)rx[0] << 8 | rx[1]) & 0x7FFu;
+}
+
 static void PWM_SetDuties(float duty_u, float duty_v, float duty_w)
 {
     uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim1);
@@ -248,6 +257,11 @@ int main(void)
   DWT->CTRL   |= DWT_CTRL_CYCCNTENA_Msk;
 
   FOC_DRV8323_Init(DRV8323_SPI_Transfer);
+  printf("DRV 00=%03X 01=%03X 02=%03X 03=%03X 04=%03X 05=%03X 06=%03X\r\n",
+         DRV8323_ReadReg(0x00), DRV8323_ReadReg(0x01),
+         DRV8323_ReadReg(0x02), DRV8323_ReadReg(0x03),
+         DRV8323_ReadReg(0x04), DRV8323_ReadReg(0x05),
+         DRV8323_ReadReg(0x06));
 
   // INLx LOW (PC9)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
@@ -273,11 +287,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    printf("mech=%.4f elec=%.4f  du=%.4f dv=%.4f dw=%.4f  vu=%.3f vv=%.3f vw=%.3f  isr=%.2fus\r\n",
+    printf("mech=%.4f elec=%.4f  du=%.4f dv=%.4f dw=%.4f  vu=%.3f vv=%.3f vw=%.3f  iu=%.3f iv=%.3f iw=%.3f  isr=%.2fus\r\n",
            motor.state.theta_mech_raw,
            motor.state.theta_elec,
            motor.out.duty_u, motor.out.duty_v, motor.out.duty_w,
            motor.out.v_u, motor.out.v_v, motor.out.v_w,
+           motor.state.i_u, motor.state.i_v, motor.state.i_w,
            (float)isr_cycles / 180.0f);
     HAL_Delay(100);
   }
