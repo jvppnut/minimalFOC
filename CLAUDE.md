@@ -2,6 +2,14 @@
 
 A field-oriented control (FOC) library targeting the STM32F7 series, designed to be maximally portable across MCU architectures.
 
+## Repository Structure
+
+```
+ClaudeWorkspace/
+├── minimalFOC/            # Portable FOC library (C99/C11)
+└── minimalFOC_stm32f7/    # STM32F722 CubeIDE application project
+```
+
 ## Project Goals
 - Implement a complete FOC algorithm stack in C
 - Strict separation between portable algorithm core and MCU-specific hardware drivers
@@ -13,7 +21,7 @@ A field-oriented control (FOC) library targeting the STM32F7 series, designed to
 - Commit to GitHub after each approved module
 - Language: C (C99 or C11)
 
-## Architecture
+## Library Architecture
 
 ```
 minimalFOC/
