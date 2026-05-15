@@ -154,10 +154,19 @@
  *           b[5:4] = 01       OCP_DEG = 4 us
  *           b[3:0] = 0010     VDS_LVL = 0.20 V
  *
+ *
+ *--> WRONG!!!
  *   0x06  CSA Control     = 0x2CC  = 010_1100_1100b
  *           b[9]   = 1        VREF_DIV = VREF/2 (bidirectional midpoint)
  *           b[7:6] = 11       CSA_GAIN = 40 V/V
  *           b[4:2] = 011      SEN_LVL = 3 (~6.25 A trip)
+ *
+ *
+ * -->CORRECT
+ *  *   0x06  CSA Control     = 0x2C3  = 010_1100_0011b
+ *           b[9]   = 1        VREF_DIV = VREF/2 (bidirectional midpoint)
+ *           b[7:6] = 11       CSA_GAIN = 40 V/V
+ *           b[1:0] = 11      SEN_LVL = 3 (~6.25 A trip)
  * -------------------------------------------------------------------------- */
 
 /* Driver Control (0x02) */

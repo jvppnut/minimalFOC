@@ -67,7 +67,7 @@ void FOC_DRV8323_Init(FOC_SPI_Transfer_t spi_xfer)
     reg |= (uint16_t)(FOC_DRV8323_LS_REF   & 0x1u) << 8u;
     reg |= (uint16_t)(FOC_DRV8323_CSA_GAIN & 0x3u) << 6u;
     reg |= (uint16_t)(FOC_DRV8323_DIS_SEN  & 0x1u) << 5u;
-    reg |= (uint16_t)(FOC_DRV8323_SEN_LVL  & 0x7u) << 2u;
+    reg |= (uint16_t)(FOC_DRV8323_SEN_LVL  & 0x7u) << 0u;
     drv_write(spi_xfer, DRV8323_REG_CSA_CTRL, reg);
 }
 
