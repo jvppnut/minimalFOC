@@ -229,7 +229,7 @@ int main(void)
 
   // Voltage-mode open-loop test: Vd=0, Vq=1 V
   motor.ref.mode    = FOC_MODE_VOLTAGE;
-  motor.ref.v_d_ref = 2.0f;
+  motor.ref.v_d_ref = 6.0f;
   motor.ref.v_q_ref = 0.0f;
 
   FOC_Init();
@@ -245,6 +245,9 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 450); // Trigger at 90% duty cycle
 
+
+  // INLx LOW (PC9)
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
   // Enable DRV8323 (PB13 HIGH)
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
@@ -264,10 +267,9 @@ int main(void)
          DRV8323_ReadReg(0x06));
 
   // INLx HIGH (PC9)
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-  // INLx LOW (PC9)
-//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
 
   HAL_TIM_Base_Start_IT(&htim1);
 
@@ -279,6 +281,15 @@ int main(void)
 	  Error_Handler();
   }
   HAL_ADCEx_InjectedStart_IT(&hadc1);
+
+
+//  HAL_Delay(1000);
+  // INLx HIGH (PC9)
+//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+
+//  HAL_Delay(1000);
+
+//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
 
   /* USER CODE END 2 */
