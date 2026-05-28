@@ -100,8 +100,14 @@ void FOC_Step(FOC_Motor_t *motor)
     FOC_HWConfig_t   *hw = &motor->hw;
     FOC_MotorParams_t *p = &motor->params;
 
+    /* --- Encoder direction correction ----------------------------------- */
+    s->theta_mech_st = hw->encoder_reversed
+                     ? (FOC_TWO_PI - s->theta_mech_raw)
+                     : s->theta_mech_raw;
+    if (hw->encoder_reversed) s->omega_mech = -s->omega_mech;
+
     /* --- Electrical angle ------------------------------------------------ */
-    s->theta_elec = s->theta_mech_raw * (float)p->pole_pairs + hw->theta_elec_offset;
+    s->theta_elec = s->theta_mech_st * (float)p->pole_pairs + hw->theta_elec_offset;
 
     float sin_th, cos_th;
     FOC_Math_SinCos(s->theta_elec, &sin_th, &cos_th);
@@ -147,7 +153,7 @@ void FOC_Step(FOC_Motor_t *motor)
                 o->v_q = 0.0f;
             } else {
                 hw->theta_elec_offset = FOC_WrapToPi(
-                    -(s->theta_mech_raw * (float)p->pole_pairs));
+                    -(s->theta_mech_st * (float)p->pole_pairs));
                 r->mode = FOC_MODE_VOLTAGE;
                 o->v_d  = 0.0f;
                 o->v_q  = 0.0f;

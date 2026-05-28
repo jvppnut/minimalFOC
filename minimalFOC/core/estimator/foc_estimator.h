@@ -11,8 +11,11 @@
  * backward difference + first-order IIR low-pass filter.
  *
  * Writes:
- *   motor->state.theta_mech  — unwrapped multi-turn angle (rad)
- *   motor->state.omega_mech  — LPF-filtered velocity (rad/s)
+ *   motor->state.theta_mech — unwrapped multi-turn angle (rad)
+ *   motor->state.omega_mech — LPF-filtered velocity (rad/s)
+ *
+ * Encoder direction correction (theta_mech_st, omega sign) is applied by
+ * FOC_Step(), not here.
  *
  * Call order each control cycle:
  *   1. HAL writes motor->state.theta_mech_raw  (single-turn [0, 2π))

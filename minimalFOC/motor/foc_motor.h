@@ -64,6 +64,13 @@ typedef struct {
      * manually if the wiring is known. */
     uint8_t  phase_reversed;
 
+    /* Non-zero if the encoder counts in the opposite direction to the back-EMF
+     * phase sequence.  Corrected by FOC_Estimator_Update() before unwrapping:
+     *   theta_mech_raw = (2π − theta_mech_raw)
+     * This reverses both theta_mech and omega_mech so all downstream FOC math
+     * (Park transform, dq decoupling) uses a consistent sign convention. */
+    uint8_t  encoder_reversed;
+
     /* Calibration state — written by FOC_Calibrate(), consumed by FOC_Step(). */
     uint32_t cal_steps_remaining; /* Settle countdown; 0 = calibration complete */
     float    cal_v_d;             /* d-axis voltage applied during alignment (V) */
@@ -79,7 +86,8 @@ typedef struct {
  *   theta_elec, i_alpha, i_beta, i_d, i_q
  * -------------------------------------------------------------------------- */
 typedef struct {
-    float  theta_mech_raw; /* Single-turn encoder angle [0, 2π)  (rad)      */
+    float  theta_mech_raw; /* Single-turn encoder angle [0, 2π)  (rad)      — written by HAL, never modified by FOC core */
+    float  theta_mech_st;  /* Single-turn angle after encoder-reversal correction (rad) — written by FOC_Step() before theta_elec computation */
     float  theta_mech;     /* Multi-turn mechanical angle        (rad)      */
     float  theta_elec;     /* Electrical angle, offset-applied  (rad)      */
     float  omega_mech;  /* Mechanical angular velocity    (rad/s)          */

@@ -32,8 +32,8 @@
 #define FOC_MOTOR_LD            69e-6f  /* d-axis inductance   Y-equiv    (H)             */
 #define FOC_MOTOR_LQ            69e-6f  /* q-axis inductance   Y-equiv    (H)             */
 #define FOC_MOTOR_LAMBDA_PM     0.00371f/* PM flux linkage, from Kt=0.078 (Wb)            */
-//#define FOC_MOTOR_POLE_PAIRS    14      /* Number of pole pairs                           */
-#define FOC_MOTOR_POLE_PAIRS    1       /* Number of pole pairs  (1 for only testing duty output respect to angle)                        */
+#define FOC_MOTOR_POLE_PAIRS    14      /* Number of pole pairs                           */
+// #define FOC_MOTOR_POLE_PAIRS    1       /* Number of pole pairs  (1 for only testing duty output respect to angle)                        */
 /* --------------------------------------------------------------------------
  * Motor mechanical parameters — CubeMars AK60-6 V1.1 (KV80)
  *

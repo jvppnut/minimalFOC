@@ -149,6 +149,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     FOC_Step(&motor);
     PWM_SetDuties(motor.out.duty_u, motor.out.duty_v, motor.out.duty_w);
+
+//    uint32_t dac_val = (uint32_t)(motor.state.theta_mech_st * (4095.0f / (2.0f * 3.14159265f)));
+//    if (dac_val > 4095u) dac_val = 4095u;
+//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+    float e_norm = motor.state.theta_elec * (1.0f / (2.0f * 3.14159265f));
+    e_norm -= (float)(int32_t)e_norm;
+    if (e_norm < 0.0f) e_norm += 1.0f;
+    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(e_norm * 4095.0f));
 //    PWM_SetDuties(0.8, 0.5, 0.3);
     isr_cycles = DWT->CYCCNT - t0;
 }
@@ -223,6 +231,10 @@ int main(void)
   motor.hw.theta_elec_offset = 0.0f;
   motor.hw.theta_mech_offset = 0.0f;
   motor.hw.phase_reversed   = 0;
+  motor.hw.encoder_reversed = 1;
+//  motor.hw.theta_elec_offset = -2.443; //From first oscilloscope comparison
+  motor.hw.theta_elec_offset = -2.663; //Newest, from 2nd oscilloscope comparison and MATLAB UV backEMF reconstruction
+
 
   // Bus voltage — fixed constant until ADC measurement is wired
   motor.state.v_bus = FOC_V_BUS_NOMINAL;
@@ -233,6 +245,8 @@ int main(void)
   motor.ref.v_q_ref = 0.0f;
 
   FOC_Init();
+
+  HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
 
   // Start PWM outputs
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); //PA8
