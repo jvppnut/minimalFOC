@@ -80,6 +80,17 @@ FOC_Motor_t motor;
 static uint16_t          as5147_tx = AS5147_CMD_READ_ANGLECOM;
 static volatile uint16_t as5147_rx = 0;
 static volatile uint32_t isr_cycles = 0;
+
+/* Binary data logger — 47-byte frames at 1 kHz via UART DMA.
+ * Frame: [0xAA][0x55][11 × float32 LE, 44 B][XOR CRC, 1 B]
+ * Fields: theta_mech, omega_mech, theta_elec, i_u, i_v, i_w,
+ *         i_d, i_q, v_d, v_q, isr_us */
+#define LOG_DECIMATE    20u
+#define LOG_FRAME_BYTES 47u
+
+static uint8_t          log_buf[2][LOG_FRAME_BYTES];
+static volatile uint8_t log_wr   = 0u;
+static volatile uint8_t log_pend = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -135,8 +146,41 @@ static void PWM_SetDuties(float duty_u, float duty_v, float duty_w)
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)(duty_w * period));
 }
 
+static void log_pack(void)
+{
+    if (log_pend) return;
+
+    uint8_t *p = log_buf[log_wr];
+    p[0] = 0xAAu;
+    p[1] = 0x55u;
+
+    const float payload[11] = {
+        motor.state.theta_mech,
+        motor.state.omega_mech,
+        motor.state.theta_elec,
+        motor.state.i_u,
+        motor.state.i_v,
+        motor.state.i_w,
+        motor.state.i_d,
+        motor.state.i_q,
+        motor.out.v_d,
+        motor.out.v_q,
+        (float)isr_cycles / 180.0f
+    };
+    memcpy(p + 2u, payload, 44u);
+
+    uint8_t crc = 0u;
+    for (uint8_t i = 2u; i < 46u; i++) crc ^= p[i];
+    p[46u] = crc;
+
+    log_pend = 1u;
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+
+	static uint32_t log_tick = 0u;
+
 
 //	GPIOC->ODR ^= GPIO_PIN_6;
     if (htim->Instance != TIM1) return;
@@ -153,12 +197,25 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //    uint32_t dac_val = (uint32_t)(motor.state.theta_mech_st * (4095.0f / (2.0f * 3.14159265f)));
 //    if (dac_val > 4095u) dac_val = 4095u;
 //    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
-    float e_norm = motor.state.theta_elec * (1.0f / (2.0f * 3.14159265f));
-    e_norm -= (float)(int32_t)e_norm;
-    if (e_norm < 0.0f) e_norm += 1.0f;
-    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(e_norm * 4095.0f));
+//    float e_norm = motor.state.theta_elec * (1.0f / (2.0f * 3.14159265f));
+//    e_norm -= (float)(int32_t)e_norm;
+//    if (e_norm < 0.0f) e_norm += 1.0f;
+//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(e_norm * 4095.0f));
+
+    /* i_u on DAC CH1: 0V = -10A, 1.65V = 0A, 3.3V = +10A */
+    float i_u_norm = motor.state.i_u * (1.0f / 10.0f);
+    if (i_u_norm >  1.0f) i_u_norm =  1.0f;
+    if (i_u_norm < -1.0f) i_u_norm = -1.0f;
+    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
+                     (uint32_t)((i_u_norm + 1.0f) * 0.5f * 4095.0f));
 //    PWM_SetDuties(0.8, 0.5, 0.3);
     isr_cycles = DWT->CYCCNT - t0;
+
+//    static uint32_t log_tick = 0u;
+    if (++log_tick >= LOG_DECIMATE) {
+        log_tick = 0u;
+        log_pack();
+    }
 }
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
@@ -217,6 +274,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
   printf("Starting main loop \r\n");
 
+  uint32_t t_stop = HAL_GetTick() + 40000U; /* 40 s safety limit */
+
   // Motor params
   motor.params.Rs         = FOC_MOTOR_RS;
   motor.params.Ld         = FOC_MOTOR_LD;
@@ -241,8 +300,8 @@ int main(void)
 
   // Voltage-mode open-loop test: Vd=0, Vq=1 V
   motor.ref.mode    = FOC_MODE_VOLTAGE;
-  motor.ref.v_d_ref = 6.0f;
-  motor.ref.v_q_ref = 0.0f;
+  motor.ref.v_d_ref = 0.0f;
+  motor.ref.v_q_ref = 1.5f;
 
   FOC_Init();
 
@@ -258,6 +317,7 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 450); // Trigger at 90% duty cycle
+//  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 1000); // Trigger at 90% duty cycle
 
 
   // INLx LOW (PC9)
@@ -280,8 +340,8 @@ int main(void)
          DRV8323_ReadReg(0x04), DRV8323_ReadReg(0x05),
          DRV8323_ReadReg(0x06));
 
-  // INLx HIGH (PC9)
-//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  // INLx HIGH (PC9) — enable LS complementary switching
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
 
 
@@ -315,14 +375,27 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    printf("mech=%.4f elec=%.4f  du=%.4f dv=%.4f dw=%.4f  vu=%.3f vv=%.3f vw=%.3f  iu=%.3f iv=%.3f iw=%.3f  isr=%.2fus\r\n",
-           motor.state.theta_mech_raw,
-           motor.state.theta_elec,
-           motor.out.duty_u, motor.out.duty_v, motor.out.duty_w,
-           motor.out.v_u, motor.out.v_v, motor.out.v_w,
-           motor.state.i_u, motor.state.i_v, motor.state.i_w,
-           (float)isr_cycles / 180.0f);
-    HAL_Delay(100);
+//    printf("mech=%.4f elec=%.4f  du=%.4f dv=%.4f dw=%.4f  vu=%.3f vv=%.3f vw=%.3f  iu=%.3f iv=%.3f iw=%.3f id=%.3f iq=%.3f  isr=%.2fus\r\n",
+//           motor.state.theta_mech_raw,
+//           motor.state.theta_elec,
+//           motor.out.duty_u, motor.out.duty_v, motor.out.duty_w,
+//           motor.out.v_u, motor.out.v_v, motor.out.v_w,
+//           motor.state.i_u, motor.state.i_v, motor.state.i_w,
+//           motor.state.i_d, motor.state.i_q,
+//           (float)isr_cycles / 180.0f);
+
+    if (log_pend && (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)) {
+        uint8_t tx_idx = log_wr;
+        log_wr   ^= 1u;
+        log_pend  = 0u;
+        HAL_UART_Transmit_DMA(&huart1, log_buf[tx_idx], LOG_FRAME_BYTES);
+    }
+
+    if (HAL_GetTick() >= t_stop) {
+        motor.ref.v_q_ref = 0.0f;
+        motor.ref.v_d_ref = 0.0f;
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+    }
   }
   /* USER CODE END 3 */
 }

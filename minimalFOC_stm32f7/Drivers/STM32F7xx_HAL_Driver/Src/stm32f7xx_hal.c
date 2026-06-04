@@ -357,6 +357,7 @@ HAL_TickFreqTypeDef HAL_GetTickFreq(void)
 /**
   * @brief This function provides minimum delay (in milliseconds) based
   *        on variable incremented.
+  *
   * @note In the default implementation , SysTick timer is the source of time base.
   *       It is used to generate interrupts at regular time intervals where uwTick
   *       is incremented.
