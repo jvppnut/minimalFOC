@@ -6,21 +6,21 @@
 /* -------------------------------------------------------------------------
  * Single-instance velocity estimator.
  *
- * Reads theta_mech_raw from motor->state each cycle, unwraps it to a
- * continuous multi-turn angle, and estimates mechanical velocity via
- * backward difference + first-order IIR low-pass filter.
+ * Reads theta_mech_st from motor->state each cycle (direction-corrected
+ * single-turn angle), unwraps it to a continuous multi-turn angle, and
+ * estimates mechanical velocity via backward difference + first-order IIR LPF.
  *
  * Writes:
- *   motor->state.theta_mech — unwrapped multi-turn angle (rad)
- *   motor->state.omega_mech — LPF-filtered velocity (rad/s)
+ *   motor->state.theta_mech — unwrapped multi-turn angle (rad), correct sign
+ *   motor->state.omega_mech — LPF-filtered velocity (rad/s), correct sign
  *
- * Encoder direction correction (theta_mech_st, omega sign) is applied by
- * FOC_Step(), not here.
+ * Called from inside FOC_Step(), after theta_mech_st is computed from
+ * theta_mech_raw. No separate sign correction needed after this call.
  *
- * Call order each control cycle:
+ * Call order each control cycle (handled by FOC_Step internally):
  *   1. HAL writes motor->state.theta_mech_raw  (single-turn [0, 2π))
- *   2. FOC_Estimator_Update()
- *   3. FOC_Step()
+ *   2. FOC_Step() computes theta_mech_st (direction-corrected)
+ *   3. FOC_Estimator_Update() unwraps and differentiates theta_mech_st
  *
  * Single-motor design: state is held in static variables — not suitable
  * for multi-instance use.

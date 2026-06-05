@@ -45,8 +45,6 @@ def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
     print(f'Opened {PORT} at {BAUD} baud', file=sys.stderr)
 
-    print(','.join(FIELDS))
-
     buf      = bytearray()
     n_ok     = 0
     n_bad    = 0
@@ -80,7 +78,8 @@ def main():
                     continue
 
                 values = struct.unpack_from('<11f', frame, 2)
-                print(','.join(f'{v:.6g}' for v in values), flush=True)
+                labeled = ',  '.join(f'{k} = {v:.6g}' for k, v in zip(FIELDS, values))
+                print(labeled, flush=True)
                 del buf[:FRAME_SZ]
                 n_ok += 1
 

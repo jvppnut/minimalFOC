@@ -91,6 +91,17 @@ static volatile uint32_t isr_cycles = 0;
 static uint8_t          log_buf[2][LOG_FRAME_BYTES];
 static volatile uint8_t log_wr   = 0u;
 static volatile uint8_t log_pend = 0u;
+
+/* ISR operating mode */
+typedef enum { ISR_MODE_ADC_CAL, ISR_MODE_CONTROL } ISR_Mode_t;
+static volatile ISR_Mode_t isr_mode = ISR_MODE_ADC_CAL;
+
+/* ADC zero-current offset calibration */
+#define ADC_CAL_SAMPLES 256u
+static uint32_t          adc_zero[3];       /* per-channel zero-current raw counts */
+static uint32_t          adc_cal_sum[3];
+static uint32_t          adc_cal_count;
+static volatile uint8_t  adc_cal_finished = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -178,12 +189,11 @@ static void log_pack(void)
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+    static uint32_t log_tick = 0u;
 
-	static uint32_t log_tick = 0u;
-
-
-//	GPIOC->ODR ^= GPIO_PIN_6;
     if (htim->Instance != TIM1) return;
+    if (isr_mode == ISR_MODE_ADC_CAL) return;
+
     uint32_t t0 = DWT->CYCCNT;
 
     motor.state.theta_mech_raw = (float)(as5147_rx & AS5147_RESP_DATA_MASK)
@@ -300,39 +310,27 @@ int main(void)
 
   // Voltage-mode open-loop test: Vd=0, Vq=1 V
   motor.ref.mode    = FOC_MODE_VOLTAGE;
-  motor.ref.v_d_ref = 0.0f;
-  motor.ref.v_q_ref = 1.5f;
+//  motor.ref.v_d_ref = 0.0f;
+//  motor.ref.v_q_ref = 1.5f;
+    motor.ref.v_d_ref = 0.0f;
+    motor.ref.v_q_ref = 1.0f;
 
   FOC_Init();
 
   HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
 
-  // Start PWM outputs
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); //PA8
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2); //PA9
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3); //PA10
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); //PA10
-
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 450); // Trigger at 90% duty cycle
-//  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 1000); // Trigger at 90% duty cycle
-
-
-  // INLx LOW (PC9)
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-
-  // Enable DRV8323 (PB13 HIGH)
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-
-
-  HAL_Delay(1);
-
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0;
   DWT->CTRL   |= DWT_CTRL_CYCCNTENA_Msk;
 
+  // INLx LOW (PC9) — keep low-side off during init
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
+  // Enable DRV8323 (PB13 HIGH) — required to power the CSA
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+  HAL_Delay(1);
+
+  // Configure DRV8323 via SPI — sets CSA gain and VREF_DIV before ADC cal
   FOC_DRV8323_Init(DRV8323_SPI_Transfer);
   printf("DRV 00=%03X 01=%03X 02=%03X 03=%03X 04=%03X 05=%03X 06=%03X\r\n",
          DRV8323_ReadReg(0x00), DRV8323_ReadReg(0x01),
@@ -340,21 +338,35 @@ int main(void)
          DRV8323_ReadReg(0x04), DRV8323_ReadReg(0x05),
          DRV8323_ReadReg(0x06));
 
-  // INLx HIGH (PC9) — enable LS complementary switching
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
+  // Start PWM outputs — INLx=LOW prevents any switching; safe during cal
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); //PA8  — phase W
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2); //PA9  — phase V
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3); //PA10 — phase U
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); //ADC trigger
 
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 450);
 
+  // --- ADC offset calibration -------------------------------------------
+  // CSA active with correct gain/VREF_DIV. INLx=LOW guarantees zero current.
   HAL_TIM_Base_Start_IT(&htim1);
-
-  // Enable master injected IT and Slaves to wait for the Master's trigger
-  if(HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK){
-	  Error_Handler();
-  }
-  if(HAL_ADCEx_InjectedStart(&hadc3) != HAL_OK){
-	  Error_Handler();
-  }
+  if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK) { Error_Handler(); }
+  if (HAL_ADCEx_InjectedStart(&hadc3) != HAL_OK) { Error_Handler(); }
   HAL_ADCEx_InjectedStart_IT(&hadc1);
+
+  while (!adc_cal_finished); // ~12.8 ms at 20 kHz, 256 samples
+
+  printf("ADC cal done: zero_u=%lu zero_v=%lu zero_w=%lu\r\n",
+         adc_zero[0], adc_zero[1], adc_zero[2]);
+
+  // INLx HIGH then immediately switch ISR to CONTROL — no gap where FOC_Step
+  // runs without switching enabled.
+  FOC_Reset();
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  isr_mode = ISR_MODE_CONTROL;
 
 
 //  HAL_Delay(1000);
@@ -991,16 +1003,34 @@ static void MX_GPIO_Init(void)
 
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	GPIOC->ODR ^= GPIO_PIN_6;
+    GPIOC->ODR ^= GPIO_PIN_6;
     if (hadc->Instance != ADC1) return;
+
+    uint32_t raw_u = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
+    uint32_t raw_v = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
+    uint32_t raw_w = HAL_ADCEx_InjectedGetValue(&hadc3, ADC_INJECTED_RANK_1);
+
+    if (isr_mode == ISR_MODE_ADC_CAL) {
+        if (!adc_cal_finished) {
+            adc_cal_sum[0] += raw_u;
+            adc_cal_sum[1] += raw_v;
+            adc_cal_sum[2] += raw_w;
+            if (++adc_cal_count >= ADC_CAL_SAMPLES) {
+                adc_zero[0] = adc_cal_sum[0] / ADC_CAL_SAMPLES;
+                adc_zero[1] = adc_cal_sum[1] / ADC_CAL_SAMPLES;
+                adc_zero[2] = adc_cal_sum[2] / ADC_CAL_SAMPLES;
+                adc_cal_finished = 1u;
+            }
+        }
+        return;
+    }
 
     const float scale = FOC_ADC_VREF / (float)(1u << FOC_ADC_BITS)
                         / (FOC_ADC_RSHUNT * FOC_ADC_CSA_GAIN_VV);
-    const float mid   = (float)(1u << (FOC_ADC_BITS - 1));
 
-    motor.state.i_u = ((float)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1) - mid) * scale;
-    motor.state.i_v = ((float)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1) - mid) * scale;
-    motor.state.i_w = ((float)HAL_ADCEx_InjectedGetValue(&hadc3, ADC_INJECTED_RANK_1) - mid) * scale;
+    motor.state.i_u = ((float)raw_u - (float)adc_zero[0]) * scale;
+    motor.state.i_v = ((float)raw_v - (float)adc_zero[1]) * scale;
+    motor.state.i_w = ((float)raw_w - (float)adc_zero[2]) * scale;
 }
 
 /* USER CODE END 4 */

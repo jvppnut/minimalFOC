@@ -28,10 +28,12 @@
  *   lambda_pm derived from Kt = 0.078 Nm/A:  λ = 2·Kt / (3·p) = 3.71 mWb
  * Verify Rs and Ls with a locked-rotor impedance measurement before tuning PIDs.
  * -------------------------------------------------------------------------- */
-#define FOC_MOTOR_RS            0.101f  /* Stator resistance   Y-equiv    (Ohm)           */
+// #define FOC_MOTOR_RS         0.101f  /* spec: Rs_LL=202mΩ → Y-equiv=101mΩ             */
+#define FOC_MOTOR_RS            0.35f   /* measured: locked-rotor vd&vq tests (incl. cables) (Ohm) */
 #define FOC_MOTOR_LD            69e-6f  /* d-axis inductance   Y-equiv    (H)             */
 #define FOC_MOTOR_LQ            69e-6f  /* q-axis inductance   Y-equiv    (H)             */
-#define FOC_MOTOR_LAMBDA_PM     0.00371f/* PM flux linkage, from Kt=0.078 (Wb)            */
+// #define FOC_MOTOR_LAMBDA_PM  0.00371f/* spec: from Kt=0.078 Nm/A peak                 */
+#define FOC_MOTOR_LAMBDA_PM     0.0055f /* measured: back-EMF vs speed at 1.5V open-loop  (Wb) */
 #define FOC_MOTOR_POLE_PAIRS    14      /* Number of pole pairs                           */
 // #define FOC_MOTOR_POLE_PAIRS    1       /* Number of pole pairs  (1 for only testing duty output respect to angle)                        */
 /* --------------------------------------------------------------------------

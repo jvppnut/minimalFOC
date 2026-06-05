@@ -1,6 +1,8 @@
 #include "foc.h"
+#include "foc_config.h"
 #include "core/math/foc_math.h"
 #include "core/math/foc_svpwm.h"
+#include "core/estimator/foc_estimator.h"
 
 /* -------------------------------------------------------------------------
  * Controller instances — single definitions; extern declarations in foc.h.
@@ -14,6 +16,7 @@ FOC_PID_t foc_pid_pos;
 
 void FOC_Init(void)
 {
+    FOC_Estimator_Init(FOC_ESTIMATOR_LPF_ALPHA, FOC_TS_HW);
     FOC_Reset();
 }
 
@@ -104,7 +107,9 @@ void FOC_Step(FOC_Motor_t *motor)
     s->theta_mech_st = hw->encoder_reversed
                      ? (FOC_TWO_PI - s->theta_mech_raw)
                      : s->theta_mech_raw;
-    if (hw->encoder_reversed) s->omega_mech = -s->omega_mech;
+
+    /* --- Estimator (uses corrected theta_mech_st) ----------------------- */
+    FOC_Estimator_Update(motor);
 
     /* --- Electrical angle ------------------------------------------------ */
     s->theta_elec = s->theta_mech_st * (float)p->pole_pairs + hw->theta_elec_offset;

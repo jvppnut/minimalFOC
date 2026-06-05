@@ -25,7 +25,7 @@ void FOC_Estimator_Reset(void)
 
 void FOC_Estimator_Update(FOC_Motor_t *motor)
 {
-    float raw = motor->state.theta_mech_raw;
+    float raw = motor->state.theta_mech_st;
 
     /* On the first call there is no previous sample — seed state and
        output zero velocity to avoid a spurious spike. */
