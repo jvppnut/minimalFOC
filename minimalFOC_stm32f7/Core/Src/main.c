@@ -202,7 +202,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_SPI_TransmitReceive_DMA(&hspi2, (uint8_t*)&as5147_tx, (uint8_t*)&as5147_rx, 1);
 
     FOC_Step(&motor);
-    PWM_SetDuties(motor.out.duty_u, motor.out.duty_v, motor.out.duty_w);
+//  PWM_SetDuties(motor.out.duty_u, motor.out.duty_v, motor.out.duty_w);  // V/W original order
+    PWM_SetDuties(motor.out.duty_u, motor.out.duty_w, motor.out.duty_v);  // V and W swapped
 
 //    uint32_t dac_val = (uint32_t)(motor.state.theta_mech_st * (4095.0f / (2.0f * 3.14159265f)));
 //    if (dac_val > 4095u) dac_val = 4095u;
@@ -300,20 +301,22 @@ int main(void)
   motor.hw.theta_elec_offset = 0.0f;
   motor.hw.theta_mech_offset = 0.0f;
   motor.hw.phase_reversed   = 0;
-  motor.hw.encoder_reversed = 1;
+//  motor.hw.encoder_reversed = 1;  // OLD: negated theta_mech_st, causing negative omega_mech
+  motor.hw.encoder_reversed = 0;
 //  motor.hw.theta_elec_offset = -2.443; //From first oscilloscope comparison
-  motor.hw.theta_elec_offset = -2.663; //Newest, from 2nd oscilloscope comparison and MATLAB UV backEMF reconstruction
+//  motor.hw.theta_elec_offset = -2.663; //Newest, from 2nd oscilloscope comparison and MATLAB UV backEMF reconstruction
 
 
   // Bus voltage — fixed constant until ADC measurement is wired
   motor.state.v_bus = FOC_V_BUS_NOMINAL;
 
-  // Voltage-mode open-loop test: Vd=0, Vq=1 V
-  motor.ref.mode    = FOC_MODE_VOLTAGE;
+  // Refs held at zero — offset calibration runs first, motor stays still after
+  motor.ref.v_d_ref = 0.0f;
+  motor.ref.v_q_ref = 0.0f;
 //  motor.ref.v_d_ref = 0.0f;
 //  motor.ref.v_q_ref = 1.5f;
-    motor.ref.v_d_ref = 0.0f;
-    motor.ref.v_q_ref = 1.0f;
+//  motor.ref.v_d_ref = 0.0f;
+//  motor.ref.v_q_ref = 1.0f;
 
   FOC_Init();
 
@@ -365,6 +368,7 @@ int main(void)
   // INLx HIGH then immediately switch ISR to CONTROL — no gap where FOC_Step
   // runs without switching enabled.
   FOC_Reset();
+  FOC_Calibrate(&motor, FOC_CAL_V_D, FOC_CAL_SETTLE_TIME);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
   isr_mode = ISR_MODE_CONTROL;
 
@@ -395,6 +399,14 @@ int main(void)
 //           motor.state.i_u, motor.state.i_v, motor.state.i_w,
 //           motor.state.i_d, motor.state.i_q,
 //           (float)isr_cycles / 180.0f);
+
+    static uint8_t cal_printed = 0u;
+    if (!cal_printed && motor.ref.mode == FOC_MODE_VOLTAGE) {
+        printf("theta_elec_offset = %.4f rad\r\n", motor.hw.theta_elec_offset);
+        cal_printed = 1u;
+//        motor.ref.v_d_ref = 1;
+        motor.ref.v_q_ref = 1.0;
+    }
 
     if (log_pend && (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)) {
         uint8_t tx_idx = log_wr;
@@ -1028,9 +1040,12 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     const float scale = FOC_ADC_VREF / (float)(1u << FOC_ADC_BITS)
                         / (FOC_ADC_RSHUNT * FOC_ADC_CSA_GAIN_VV);
 
+//  motor.state.i_u = ((float)raw_u - (float)adc_zero[0]) * scale;  // V/W original order
+//  motor.state.i_v = ((float)raw_v - (float)adc_zero[1]) * scale;
+//  motor.state.i_w = ((float)raw_w - (float)adc_zero[2]) * scale;
     motor.state.i_u = ((float)raw_u - (float)adc_zero[0]) * scale;
-    motor.state.i_v = ((float)raw_v - (float)adc_zero[1]) * scale;
-    motor.state.i_w = ((float)raw_w - (float)adc_zero[2]) * scale;
+    motor.state.i_w = ((float)raw_v - (float)adc_zero[1]) * scale;  // ADC2 (HW phase V) → i_w
+    motor.state.i_v = ((float)raw_w - (float)adc_zero[2]) * scale;  // ADC3 (HW phase W) → i_v
 }
 
 /* USER CODE END 4 */
