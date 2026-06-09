@@ -28,6 +28,7 @@
 #include "foc.h"
 #include "driver/foc_drv8323.h"
 #include "driver/foc_as5147.h"
+#include "core/math/foc_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,12 +82,12 @@ static uint16_t          as5147_tx = AS5147_CMD_READ_ANGLECOM;
 static volatile uint16_t as5147_rx = 0;
 static volatile uint32_t isr_cycles = 0;
 
-/* Binary data logger — 47-byte frames at 1 kHz via UART DMA.
- * Frame: [0xAA][0x55][11 × float32 LE, 44 B][XOR CRC, 1 B]
+/* Binary data logger — 64-byte frames at 1 kHz via UART DMA.
+ * Frame: [0xAA][0x55][15 × float32 LE, 60 B][uint8 mode][XOR CRC]
  * Fields: theta_mech, omega_mech, theta_elec, i_u, i_v, i_w,
- *         i_d, i_q, v_d, v_q, isr_us */
+ *         i_d, i_q, v_d, v_q, i_d_ref, i_q_ref, omega_ref, theta_ref, isr_us */
 #define LOG_DECIMATE    20u
-#define LOG_FRAME_BYTES 47u
+#define LOG_FRAME_BYTES 64u
 
 static uint8_t          log_buf[2][LOG_FRAME_BYTES];
 static volatile uint8_t log_wr   = 0u;
@@ -98,10 +99,29 @@ static volatile ISR_Mode_t isr_mode = ISR_MODE_ADC_CAL;
 
 /* ADC zero-current offset calibration */
 #define ADC_CAL_SAMPLES 256u
-static uint32_t          adc_zero[3];       /* per-channel zero-current raw counts */
+static uint32_t          adc_zero[3];
 static uint32_t          adc_cal_sum[3];
 static uint32_t          adc_cal_count;
 static volatile uint8_t  adc_cal_finished = 0u;
+
+/* Function generator — runs in ISR, drives the active-mode reference */
+typedef struct {
+    uint8_t  enabled;
+    uint8_t  waveform;   /* 0=step  1=square  2=triangle  3=sine */
+    float    frequency;  /* Hz */
+    float    amplitude;  /* peak magnitude */
+    float    offset;     /* DC bias */
+    float    phase;      /* accumulator [0, 1) */
+} FOC_FuncGen_t;
+static FOC_FuncGen_t fgen;
+
+/* UART RX command ring buffer — single-byte IT receive feeds this from ISR */
+#define CMD_RING_SIZE 64u
+static volatile uint8_t  cmd_ring[CMD_RING_SIZE];
+static volatile uint8_t  cmd_wr      = 0u;
+static          uint8_t  cmd_rd      = 0u;
+static          uint8_t  cmd_rx_byte = 0u;
+static volatile uint8_t  motor_stopped = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,6 +139,7 @@ static void MX_ADC2_Init(void);
 static void MX_ADC3_Init(void);
 /* USER CODE BEGIN PFP */
 static void PWM_SetDuties(float duty_u, float duty_v, float duty_w);
+static void cmd_parse(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -165,7 +186,7 @@ static void log_pack(void)
     p[0] = 0xAAu;
     p[1] = 0x55u;
 
-    const float payload[11] = {
+    const float payload[15] = {
         motor.state.theta_mech,
         motor.state.omega_mech,
         motor.state.theta_elec,
@@ -176,15 +197,50 @@ static void log_pack(void)
         motor.state.i_q,
         motor.out.v_d,
         motor.out.v_q,
+        motor.ref.i_d_ref,
+        motor.ref.i_q_ref,
+        motor.ref.omega_ref,
+        motor.ref.theta_ref,
         (float)isr_cycles / 180.0f
     };
-    memcpy(p + 2u, payload, 44u);
+    memcpy(p + 2u, payload, 60u);
+
+    p[62u] = (uint8_t)motor.ref.mode;
 
     uint8_t crc = 0u;
-    for (uint8_t i = 2u; i < 46u; i++) crc ^= p[i];
-    p[46u] = crc;
+    for (uint8_t i = 2u; i < 63u; i++) crc ^= p[i];
+    p[63u] = crc;
 
     log_pend = 1u;
+}
+
+static float fgen_update(FOC_FuncGen_t *fg)
+{
+    fg->phase += fg->frequency * FOC_TS_HW;
+    if (fg->phase >= 1.0f) fg->phase -= 1.0f;
+
+    float out;
+    switch (fg->waveform) {
+        case 1u: /* square */
+            out = (fg->phase < 0.5f) ? fg->amplitude : -fg->amplitude;
+            break;
+        case 2u: /* triangle */
+            out = fg->amplitude * ((fg->phase < 0.5f)
+                ? (4.0f * fg->phase - 1.0f)
+                : (3.0f - 4.0f * fg->phase));
+            break;
+        case 3u: { /* sine — uses LUT, no math.h */
+            float s, c;
+            FOC_Math_SinCos(fg->phase * FOC_TWO_PI, &s, &c);
+            out = fg->amplitude * s;
+            break;
+        }
+        case 0u: /* step — constant amplitude */
+        default:
+            out = fg->amplitude;
+            break;
+    }
+    return out + fg->offset;
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -200,6 +256,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                  * (2.0f * 3.14159265f / 16384.0f);
     HAL_GPIO_WritePin(AS5147_CSN_PORT, AS5147_CSN_PIN, GPIO_PIN_RESET);
     HAL_SPI_TransmitReceive_DMA(&hspi2, (uint8_t*)&as5147_tx, (uint8_t*)&as5147_rx, 1);
+
+    /* Apply function generator — voltage mode only; other modes commented out */
+    if (fgen.enabled && !motor_stopped) {
+        float fgen_out = fgen_update(&fgen);
+        if (motor.ref.mode == FOC_MODE_VOLTAGE) {
+            motor.ref.v_q_ref = fgen_out;
+        }
+//      else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_q_ref   = fgen_out;
+//      else if (motor.ref.mode == FOC_MODE_VELOCITY)  motor.ref.omega_ref = fgen_out;
+//      else if (motor.ref.mode == FOC_MODE_POSITION)  motor.ref.theta_ref = fgen_out;
+    }
 
     FOC_Step(&motor);
 //  PWM_SetDuties(motor.out.duty_u, motor.out.duty_v, motor.out.duty_w);  // V/W original order
@@ -233,6 +300,90 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     if (hspi->Instance != SPI2) return;
     HAL_GPIO_WritePin(AS5147_CSN_PORT, AS5147_CSN_PIN, GPIO_PIN_SET);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance != USART1) return;
+    cmd_ring[cmd_wr & (CMD_RING_SIZE - 1u)] = cmd_rx_byte;
+    cmd_wr++;
+    HAL_UART_Receive_IT(&huart1, &cmd_rx_byte, 1u);
+}
+
+static void cmd_parse(void)
+{
+    /* 7-byte frame: [0xBB][CMD][float32 LE, 4 B][XOR CRC] */
+    while (((uint8_t)(cmd_wr - cmd_rd)) >= 7u) {
+        if (cmd_ring[cmd_rd & (CMD_RING_SIZE - 1u)] != 0xBBu) {
+            cmd_rd++;
+            continue;
+        }
+        /* Validate CRC over CMD + 4 payload bytes */
+        uint8_t crc = 0u;
+        for (uint8_t i = 1u; i < 6u; i++)
+            crc ^= cmd_ring[(uint8_t)(cmd_rd + i) & (CMD_RING_SIZE - 1u)];
+        if (crc != cmd_ring[(uint8_t)(cmd_rd + 6u) & (CMD_RING_SIZE - 1u)]) {
+            cmd_rd++;
+            continue;
+        }
+        uint8_t cmd = cmd_ring[(uint8_t)(cmd_rd + 1u) & (CMD_RING_SIZE - 1u)];
+        uint8_t fb[4];
+        for (uint8_t i = 0u; i < 4u; i++)
+            fb[i] = cmd_ring[(uint8_t)(cmd_rd + 2u + i) & (CMD_RING_SIZE - 1u)];
+        float val;
+        memcpy(&val, fb, 4u);
+        cmd_rd = (uint8_t)(cmd_rd + 7u);
+
+        switch (cmd) {
+            case 0x01u: { /* SET_MODE */
+                FOC_CtrlMode_t new_mode = (FOC_CtrlMode_t)val;
+                if (new_mode != motor.ref.mode) {
+                    motor.ref.v_d_ref   = 0.0f;
+                    motor.ref.v_q_ref   = 0.0f;
+                    motor.ref.i_d_ref   = 0.0f;
+                    motor.ref.i_q_ref   = 0.0f;
+                    motor.ref.omega_ref = 0.0f;
+                    motor.ref.theta_ref = 0.0f;
+                    fgen.enabled        = 0u;
+                    FOC_Reset();
+                }
+                motor.ref.mode = new_mode;
+                break;
+            }
+            case 0x02u: motor.ref.v_d_ref = val; break;  /* SET_VD_REF */
+            case 0x03u: motor.ref.v_q_ref = val; break;  /* SET_VQ_REF */
+//          case 0x04u: motor.ref.i_d_ref   = val; break;  /* SET_ID_REF  — torque mode disabled */
+//          case 0x05u: motor.ref.i_q_ref   = val; break;  /* SET_IQ_REF  — torque mode disabled */
+//          case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF — velocity disabled  */
+//          case 0x07u: motor.ref.theta_ref  = val; break;  /* SET_THETA_REF — position disabled  */
+            case 0x08u: { /* STOP */
+                motor.ref.v_d_ref   = 0.0f;
+                motor.ref.v_q_ref   = 0.0f;
+                motor.ref.i_d_ref   = 0.0f;
+                motor.ref.i_q_ref   = 0.0f;
+                motor.ref.omega_ref = 0.0f;
+                motor.ref.theta_ref = 0.0f;
+                fgen.enabled        = 0u;
+                FOC_Reset();
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+                motor_stopped = 1u;
+                break;
+            }
+            case 0x09u: { /* RESUME */
+                if (motor_stopped) {
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+                    motor_stopped = 0u;
+                }
+                break;
+            }
+            case 0x0Au: fgen.waveform  = (uint8_t)val;            break;  /* FGEN_WAVE   */
+            case 0x0Bu: fgen.frequency = val;                      break;  /* FGEN_FREQ   */
+            case 0x0Cu: fgen.amplitude = val;                      break;  /* FGEN_AMP    */
+            case 0x0Du: fgen.offset    = val;                      break;  /* FGEN_OFFSET */
+            case 0x0Eu: fgen.enabled   = (val != 0.0f) ? 1u : 0u; break;  /* FGEN_ENABLE */
+            default: break;
+        }
+    }
 }
 /* USER CODE END 0 */
 
@@ -285,7 +436,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   printf("Starting main loop \r\n");
 
-  uint32_t t_stop = HAL_GetTick() + 40000U; /* 40 s safety limit */
+  uint32_t t_stop = HAL_GetTick() + 80000U; /* 40 s safety limit */
 
   // Motor params
   motor.params.Rs         = FOC_MOTOR_RS;
@@ -371,6 +522,7 @@ int main(void)
   FOC_Calibrate(&motor, FOC_CAL_V_D, FOC_CAL_SETTLE_TIME);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
   isr_mode = ISR_MODE_CONTROL;
+  HAL_UART_Receive_IT(&huart1, &cmd_rx_byte, 1u);
 
 
 //  HAL_Delay(1000);
@@ -391,24 +543,18 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-//    printf("mech=%.4f elec=%.4f  du=%.4f dv=%.4f dw=%.4f  vu=%.3f vv=%.3f vw=%.3f  iu=%.3f iv=%.3f iw=%.3f id=%.3f iq=%.3f  isr=%.2fus\r\n",
-//           motor.state.theta_mech_raw,
-//           motor.state.theta_elec,
-//           motor.out.duty_u, motor.out.duty_v, motor.out.duty_w,
-//           motor.out.v_u, motor.out.v_v, motor.out.v_w,
-//           motor.state.i_u, motor.state.i_v, motor.state.i_w,
-//           motor.state.i_d, motor.state.i_q,
-//           (float)isr_cycles / 180.0f);
+    cmd_parse();
 
     static uint8_t cal_printed = 0u;
     if (!cal_printed && motor.ref.mode == FOC_MODE_VOLTAGE) {
         printf("theta_elec_offset = %.4f rad\r\n", motor.hw.theta_elec_offset);
         cal_printed = 1u;
-//        motor.ref.v_d_ref = 1;
-        motor.ref.v_q_ref = 1.0;
+        /* v_q_ref left at 0 — PC scope sets references */
     }
 
-    if (log_pend && (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)) {
+    /* huart1.gState checks TX side only; HAL_UART_GetState() ORs in RxState
+       (BUSY_RX when IT receive is armed) which would always block TX. */
+    if (log_pend && (huart1.gState == HAL_UART_STATE_READY)) {
         uint8_t tx_idx = log_wr;
         log_wr   ^= 1u;
         log_pend  = 0u;
@@ -418,7 +564,9 @@ int main(void)
     if (HAL_GetTick() >= t_stop) {
         motor.ref.v_q_ref = 0.0f;
         motor.ref.v_d_ref = 0.0f;
+        fgen.enabled      = 0u;
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+        motor_stopped     = 1u;
     }
   }
   /* USER CODE END 3 */

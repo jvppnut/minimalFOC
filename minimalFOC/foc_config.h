@@ -68,7 +68,7 @@
 /* --------------------------------------------------------------------------
  * Calibration defaults
  * -------------------------------------------------------------------------- */
-#define FOC_CAL_V_D             1.0f    /* d-axis alignment voltage       (V)
+#define FOC_CAL_V_D             2.0f    /* d-axis alignment voltage       (V)
                                            Typical: 10–20 % of v_bus.                    */
 #define FOC_CAL_SETTLE_TIME     0.5f    /* Rotor settle time during cal   (s)             */
 
