@@ -124,7 +124,8 @@ static          uint8_t  cmd_dma_rd  = 0u;
 static volatile uint8_t  pending_cmd  = 0u;
 static volatile float    pending_val  = 0.0f;
 static volatile uint8_t  cmd_ready    = 0u;
-static volatile uint8_t          motor_stopped = 0u;
+static volatile uint8_t          motor_stopped    = 0u;
+static          FOC_CtrlMode_t   mode_before_stop = FOC_MODE_VOLTAGE;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -365,7 +366,12 @@ static void cmd_apply(uint8_t cmd, float val)
                 motor.ref.i_d_ref   = 0.0f;
                 motor.ref.i_q_ref   = 0.0f;
                 motor.ref.omega_ref = 0.0f;
-                motor.ref.theta_ref = 0.0f;
+                /* Entering position mode: hold the current position instead of
+                 * snapping theta_ref to 0, which would command a step to the
+                 * calibration-zero angle and jerk the rotor. */
+                motor.ref.theta_ref = (new_mode == FOC_MODE_POSITION)
+                                     ? (motor.state.theta_mech - motor.hw.theta_mech_offset)
+                                     : 0.0f;
                 fgen.enabled        = 0u;
                 motor.ref.mode      = new_mode;
                 FOC_Reset();
@@ -379,12 +385,21 @@ static void cmd_apply(uint8_t cmd, float val)
 //      case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF — velocity disabled  */
 //      case 0x07u: motor.ref.theta_ref  = val; break;  /* SET_THETA_REF — position disabled  */
         case 0x08u: { /* STOP */
+            /* Drop to voltage mode at 0V instead of leaving the previous
+             * mode running with zeroed refs: with the gate driver disabled
+             * the inner loops would keep integrating against a measured
+             * state they can no longer correct, winding up the PID(s) and
+             * causing a jump the moment RESUME re-enables the bridge. */
+            if (!motor_stopped) {
+                mode_before_stop = motor.ref.mode;
+            }
             motor.ref.v_d_ref   = 0.0f;
             motor.ref.v_q_ref   = 0.0f;
             motor.ref.i_d_ref   = 0.0f;
             motor.ref.i_q_ref   = 0.0f;
             motor.ref.omega_ref = 0.0f;
             motor.ref.theta_ref = 0.0f;
+            motor.ref.mode      = FOC_MODE_VOLTAGE;
             fgen.enabled        = 0u;
             FOC_Reset();
             HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
@@ -393,6 +408,13 @@ static void cmd_apply(uint8_t cmd, float val)
         }
         case 0x09u: { /* RESUME */
             if (motor_stopped) {
+                /* Position mode: hold the current position rather than
+                 * resuming with the stale theta_ref zeroed out by STOP. */
+                if (mode_before_stop == FOC_MODE_POSITION) {
+                    motor.ref.theta_ref = motor.state.theta_mech - motor.hw.theta_mech_offset;
+                }
+                motor.ref.mode = mode_before_stop;
+                FOC_Reset();
                 HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
                 motor_stopped = 0u;
             }
@@ -582,13 +604,13 @@ int main(void)
         HAL_UART_Transmit_DMA(&huart1, log_buf[tx_idx], LOG_FRAME_BYTES);
     }
 
-    if (HAL_GetTick() >= t_stop) {
-        motor.ref.v_q_ref = 0.0f;
-        motor.ref.v_d_ref = 0.0f;
-        fgen.enabled      = 0u;
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-        motor_stopped     = 1u;
-    }
+//    if (HAL_GetTick() >= t_stop) {
+//        motor.ref.v_q_ref = 0.0f;
+//        motor.ref.v_d_ref = 0.0f;
+//        fgen.enabled      = 0u;
+//        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+//        motor_stopped     = 1u;
+//    }
   }
   /* USER CODE END 3 */
 }
