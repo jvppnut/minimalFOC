@@ -14,6 +14,7 @@ Command frame (PC → MCU), 7 bytes:
 """
 
 import sys
+import csv
 import struct
 import serial
 import threading
@@ -22,7 +23,8 @@ import collections
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QComboBox, QPushButton, QLineEdit, QGroupBox,
+    QGridLayout, QLabel, QComboBox, QPushButton, QLineEdit, QGroupBox,
+    QFileDialog,
 )
 from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
@@ -199,6 +201,7 @@ class FocScope(QMainWindow):
                        for f in FIELDS}
         self._t_now = 0.0
         self._rx_mode = 0
+        self._frozen = False
 
         self._build_ui()
 
@@ -218,10 +221,9 @@ class FocScope(QMainWindow):
 
         vbox.addWidget(self._build_control_bar())
         vbox.addWidget(self._build_fgen_bar())
+        vbox.addWidget(self._build_display_bar())
 
-        self._gw = pg.GraphicsLayoutWidget()
-        vbox.addWidget(self._gw, stretch=1)
-        self._build_plots()
+        vbox.addWidget(self._build_plots(), stretch=1)
 
         vbox.addWidget(self._build_live_panel())
 
@@ -343,35 +345,102 @@ class FocScope(QMainWindow):
 
         return bar
 
-    def _build_plots(self):
-        gw = self._gw
-        self._curves: dict[str, pg.PlotDataItem] = {}
+    def _build_display_bar(self) -> QGroupBox:
+        bar = QGroupBox()
+        h = QHBoxLayout(bar)
+        h.setSpacing(6)
 
-        def add_plot(row, col, title, ylabel, traces):
+        self._freeze_btn = QPushButton('❄  Freeze')
+        self._freeze_btn.setCheckable(True)
+        self._freeze_btn.setStyleSheet(
+            'QPushButton:checked { background: #2980b9; color: white; font-weight: bold; }')
+        self._freeze_btn.toggled.connect(self._on_freeze_toggle)
+        h.addWidget(self._freeze_btn)
+
+        self._save_csv_btn = QPushButton('Save CSV')
+        self._save_csv_btn.setEnabled(False)
+        self._save_csv_btn.clicked.connect(self._on_save_csv)
+        h.addWidget(self._save_csv_btn)
+        h.addWidget(_sep())
+
+        h.addWidget(QLabel('Y-Axis:'))
+        self._yaxis_mode_combo = QComboBox()
+        self._yaxis_mode_combo.addItems(['Auto', 'Manual'])
+        self._yaxis_mode_combo.currentIndexChanged.connect(self._on_yaxis_mode_change)
+        h.addWidget(self._yaxis_mode_combo)
+        h.addStretch()
+
+        return bar
+
+    def _build_plots(self) -> QWidget:
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(4)
+
+        self._curves: dict[str, pg.PlotDataItem] = {}
+        self._plot_widgets: dict[str, pg.PlotWidget] = {}
+        self._yaxis_edits: dict[str, tuple[QLineEdit, QLineEdit]] = {}
+
+        def add_plot(row, col, key, title, ylabel, traces, y_default):
             """traces: list of (field_key, legend_label)"""
-            p = gw.addPlot(row=row, col=col, title=title)
-            p.setLabel('left', ylabel)
-            p.setLabel('bottom', 't (s)')
-            p.addLegend(offset=(5, 5))
-            p.showGrid(x=True, y=True, alpha=0.25)
+            pw = pg.PlotWidget(title=title)
+            pw.setLabel('left', ylabel)
+            pw.setLabel('bottom', 't (s)')
+            pw.addLegend(offset=(5, 5))
+            pw.showGrid(x=True, y=True, alpha=0.25)
             for f, lbl in traces:
                 pen = pg.mkPen(color=self.COLORS.get(f, '#ffffff'), width=1)
-                self._curves[f] = p.plot(pen=pen, name=lbl)
-            return p
+                self._curves[f] = pw.plot(pen=pen, name=lbl)
+            self._plot_widgets[key] = pw
 
-        add_plot(0, 0, 'UVW Currents', 'A',
-                 [('i_u','i_u'), ('i_v','i_v'), ('i_w','i_w')])
-        add_plot(0, 1, 'dq Currents + Refs', 'A',
+            cell = QWidget()
+            vb = QVBoxLayout(cell)
+            vb.setContentsMargins(0, 0, 0, 0)
+            vb.setSpacing(2)
+            vb.addWidget(pw, stretch=1)
+
+            yr = QHBoxLayout()
+            yr.setContentsMargins(0, 0, 0, 0)
+            yr.setSpacing(3)
+            yr.addStretch()
+            yr.addWidget(QLabel('Y min:'))
+            ymin_edit = QLineEdit(str(y_default[0]))
+            ymin_edit.setFixedWidth(55)
+            yr.addWidget(ymin_edit)
+            yr.addWidget(QLabel('Y max:'))
+            ymax_edit = QLineEdit(str(y_default[1]))
+            ymax_edit.setFixedWidth(55)
+            yr.addWidget(ymax_edit)
+            yr.addStretch()
+            vb.addLayout(yr)
+
+            ymin_edit.editingFinished.connect(lambda k=key: self._on_yrange_edit(k))
+            ymax_edit.editingFinished.connect(lambda k=key: self._on_yrange_edit(k))
+            self._yaxis_edits[key] = (ymin_edit, ymax_edit)
+
+            grid.addWidget(cell, row, col)
+
+        add_plot(0, 0, 'uvw', 'UVW Currents', 'A',
+                 [('i_u','i_u'), ('i_v','i_v'), ('i_w','i_w')], (-10.0, 10.0))
+        add_plot(0, 1, 'dq_i', 'dq Currents + Refs', 'A',
                  [('i_d','i_d'), ('i_q','i_q'),
-                  ('i_d_ref','i_d_ref'), ('i_q_ref','i_q_ref')])
-        add_plot(1, 0, 'dq Voltages (post-limiter)', 'V',
-                 [('v_d','v_d'), ('v_q','v_q')])
-        add_plot(1, 1, 'Angles', 'rad',
-                 [('theta_mech','θ_mech'), ('theta_elec','θ_elec')])
-        add_plot(2, 0, 'Mechanical Velocity', 'rad/s',
-                 [('omega_mech','ω_mech')])
-        add_plot(2, 1, 'ISR Time', 'µs',
-                 [('isr_us','isr')])
+                  ('i_d_ref','i_d_ref'), ('i_q_ref','i_q_ref')], (-10.0, 10.0))
+        add_plot(1, 0, 'dq_v', 'dq Voltages (post-limiter)', 'V',
+                 [('v_d','v_d'), ('v_q','v_q')], (-12.0, 12.0))
+        add_plot(1, 1, 'angles', 'Angles', 'rad',
+                 [('theta_mech','θ_mech'), ('theta_elec','θ_elec')], (-3.5, 3.5))
+        add_plot(2, 0, 'omega', 'Mechanical Velocity', 'rad/s',
+                 [('omega_mech','ω_mech')], (-50.0, 50.0))
+        add_plot(2, 1, 'isr', 'ISR Time', 'µs',
+                 [('isr_us','isr')], (0.0, 50.0))
+
+        for r in range(3):
+            grid.setRowStretch(r, 1)
+        for c in range(2):
+            grid.setColumnStretch(c, 1)
+
+        return container
 
     def _build_live_panel(self) -> QGroupBox:
         box = QGroupBox('Live Values')
@@ -477,6 +546,52 @@ class FocScope(QMainWindow):
         self._window_s = self.WINDOW_OPTIONS[idx]
         self._max_pts  = int(self._window_s * SAMPLE_RATE)
 
+    def _on_freeze_toggle(self, checked: bool):
+        self._frozen = checked
+        self._save_csv_btn.setEnabled(checked)
+        self._freeze_btn.setText('▶  Live' if checked else '❄  Freeze')
+        if not checked:
+            # Discard whatever queued up while frozen — resume from "now"
+            # rather than fast-forwarding through a stale backlog.
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+
+    def _on_save_csv(self):
+        if not self._t_buf:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save CSV', 'foc_log.csv', 'CSV Files (*.csv)')
+        if not path:
+            return
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['t'] + FIELDS)
+            writer.writerows(zip(self._t_buf, *(self._bufs[f] for f in FIELDS)))
+
+    def _on_yaxis_mode_change(self, idx: int):
+        manual = (idx == 1)
+        for key, pw in self._plot_widgets.items():
+            if manual:
+                self._apply_yrange(key)
+            else:
+                pw.enableAutoRange(axis='y', enable=True)
+
+    def _apply_yrange(self, key: str):
+        ymin_edit, ymax_edit = self._yaxis_edits[key]
+        try:
+            ymin = float(ymin_edit.text())
+            ymax = float(ymax_edit.text())
+        except ValueError:
+            return
+        self._plot_widgets[key].setYRange(ymin, ymax, padding=0)
+
+    def _on_yrange_edit(self, key: str):
+        if self._yaxis_mode_combo.currentIndex() == 1:
+            self._apply_yrange(key)
+
     def _send(self, cmd_byte: int, value: float):
         if self._reader and self._reader.is_alive():
             self._reader.send(build_cmd(cmd_byte, value))
@@ -484,6 +599,9 @@ class FocScope(QMainWindow):
     # ── Plot / live-values update (called at ~30 Hz) ───────────────────────────
 
     def _update(self):
+        if self._frozen:
+            return
+
         # Drain the queue — process up to 300 frames per tick to avoid falling behind
         n = 0
         while n < 300:
