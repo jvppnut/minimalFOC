@@ -12,6 +12,10 @@ FOC_PID_t foc_pid_iq;
 FOC_PID_t foc_pid_speed;
 FOC_PID_t foc_pid_pos;
 
+/* I-P alternates for the current loop — see foc.h for how to switch to these. */
+FOC_IP_t foc_ip_id;
+FOC_IP_t foc_ip_iq;
+
 /* ------------------------------------------------------------------------- */
 
 void FOC_Init(void)
@@ -26,6 +30,8 @@ void FOC_Reset(void)
     FOC_PID_Reset(&foc_pid_iq);
     FOC_PID_Reset(&foc_pid_speed);
     FOC_PID_Reset(&foc_pid_pos);
+    FOC_IP_Reset(&foc_ip_id);
+    FOC_IP_Reset(&foc_ip_iq);
 }
 
 void FOC_Calibrate(FOC_Motor_t *motor, float v_cal, float settle_time_s)
@@ -50,19 +56,23 @@ void FOC_CurrentCtrlComputation(FOC_Motor_t *motor)
     float omega_e = s->omega_mech * (float)p->pole_pairs;
     float v_lim   = s->v_bus * FOC_ONE_OVER_SQRT3;
 
-    /* PI feedback on each axis. */
-    float vd_fb = FOC_PID_Update(&foc_pid_id, r->i_d_ref - s->i_d, 0.0f);
-    float vq_fb = FOC_PID_Update(&foc_pid_iq, r->i_q_ref - s->i_q, 0.0f);
+    /* PI feedback on each axis.
+     * To swap in the zero-free I-P structure instead (same Kp/Ki, no
+     * reference-path zero — see foc_ip.h), comment this block out and
+     * uncomment the one below. */
+    // float vd_fb = FOC_PID_Update(&foc_pid_id, r->i_d_ref - s->i_d, 0.0f);
+    // float vq_fb = FOC_PID_Update(&foc_pid_iq, r->i_q_ref - s->i_q, 0.0f);
 
-    /* Cross-coupling and back-EMF feedforward (PMSM voltage equations):
-     *   v_d includes  -omega_e * Lq * i_q          (q-to-d coupling)
-     *   v_q includes  +omega_e * (Ld*i_d + lpm)    (d-to-q coupling + back-EMF)
-     * Decouples the axes so each PI drives a simple first-order R-L plant. */
-    float vd_ff = -omega_e * p->Lq * s->i_q;
-    float vq_ff =  omega_e * (p->Ld * s->i_d + p->lambda_pm);
+   float vd_fb = FOC_IP_Update(&foc_ip_id, r->i_d_ref, s->i_d);
+   float vq_fb = FOC_IP_Update(&foc_ip_iq, r->i_q_ref, s->i_q);
 
-    o->v_d = FOC_Clamp(vd_fb + vd_ff, -v_lim, v_lim);
-    o->v_q = FOC_Clamp(vq_fb + vq_ff, -v_lim, v_lim);
+    /* Cross-coupling and back-EMF feedforward — disabled for current loop testing.
+     * Re-enable by uncommenting the two ff lines and switching back to vd_fb+vd_ff. */
+//    float vd_ff = -omega_e * p->Lq * s->i_q;
+//    float vq_ff =  omega_e * (p->Ld * s->i_d + p->lambda_pm);
+
+    o->v_d = FOC_Clamp(vd_fb, -v_lim, v_lim);
+    o->v_q = FOC_Clamp(vq_fb, -v_lim, v_lim);
 }
 
 void FOC_VelocityCtrlComputation(FOC_Motor_t *motor)
@@ -126,6 +136,18 @@ void FOC_Step(FOC_Motor_t *motor)
        FOC_MODE_CALIBRATE so the voltage vector is forced along phase U. */
     float sin_out = sin_th;
     float cos_out = cos_th;
+
+    /* --- Emergency current limit ----------------------------------------- */
+    if ((s->i_d > FOC_CURRENT_EMERGENCY_LIMIT || s->i_d < -FOC_CURRENT_EMERGENCY_LIMIT) ||
+        (s->i_q > FOC_CURRENT_EMERGENCY_LIMIT || s->i_q < -FOC_CURRENT_EMERGENCY_LIMIT)) {
+        r->mode      = FOC_MODE_VOLTAGE;
+        r->v_d_ref   = 0.0f;
+        r->v_q_ref   = 0.0f;
+        r->i_d_ref   = 0.0f;
+        r->i_q_ref   = 0.0f;
+        r->omega_ref = 0.0f;
+        FOC_Reset();
+    }
 
     /* --- Control cascade ------------------------------------------------- */
     switch (r->mode) {

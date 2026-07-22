@@ -107,7 +107,7 @@ static volatile uint8_t  adc_cal_finished = 0u;
 /* Function generator — runs in ISR, drives the active-mode reference */
 typedef struct {
     uint8_t  enabled;
-    uint8_t  waveform;   /* 0=step  1=square  2=triangle  3=sine */
+    uint8_t  waveform;   /* 0=step  1=square  2=triangle  3=sine  4=staircase2 */
     float    frequency;  /* Hz */
     float    amplitude;  /* peak magnitude */
     float    offset;     /* DC bias */
@@ -240,6 +240,18 @@ static float fgen_update(FOC_FuncGen_t *fg)
             out = fg->amplitude * s;
             break;
         }
+        case 4u: {
+            /* 2-step staircase: 0 -> A -> 2A, repeating every period.
+             * The A->2A leg never crosses zero current, so the dead-time
+             * phase-current-sign disturbance stays fixed across that edge —
+             * that's the "second step" meant for clean R/L identification;
+             * discard the 0->A and 2A->0 legs, which do cross zero. */
+            const float third = 1.0f / 3.0f;
+            if (fg->phase < third)             out = 0.0f;
+            else if (fg->phase < 2.0f * third) out = fg->amplitude;
+            else                                out = 2.0f * fg->amplitude;
+            break;
+        }
         case 0u: /* step — constant amplitude */
         default:
             out = fg->amplitude;
@@ -271,9 +283,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (fgen.enabled && !motor_stopped) {
         float fgen_out = fgen_update(&fgen);
         if (motor.ref.mode == FOC_MODE_VOLTAGE) {
-            motor.ref.v_q_ref = fgen_out;
+//            motor.ref.v_q_ref = fgen_out;
+        	motor.ref.v_d_ref = fgen_out; //Just for measuring d axis parameters
         }
-//      else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_q_ref   = fgen_out;
+//      else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_d_ref   = fgen_out; //For testing id current control, this should be iq
+        else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_q_ref   = fgen_out;
 //      else if (motor.ref.mode == FOC_MODE_VELOCITY)  motor.ref.omega_ref = fgen_out;
 //      else if (motor.ref.mode == FOC_MODE_POSITION)  motor.ref.theta_ref = fgen_out;
     }
@@ -290,12 +304,39 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //    if (e_norm < 0.0f) e_norm += 1.0f;
 //    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(e_norm * 4095.0f));
 
+//    /* i_u on DAC CH1: 0V = -10A, 1.65V = 0A, 3.3V = +10A */
+//    float i_u_norm = motor.state.i_u * (1.0f / 10.0f);
+//    if (i_u_norm >  1.0f) i_u_norm =  1.0f;
+//    if (i_u_norm < -1.0f) i_u_norm = -1.0f;
+//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
+//                     (uint32_t)((i_u_norm + 1.0f) * 0.5f * 4095.0f));
     /* i_u on DAC CH1: 0V = -10A, 1.65V = 0A, 3.3V = +10A */
-    float i_u_norm = motor.state.i_u * (1.0f / 10.0f);
-    if (i_u_norm >  1.0f) i_u_norm =  1.0f;
-    if (i_u_norm < -1.0f) i_u_norm = -1.0f;
+//    float i_d_norm = motor.state.i_d * (1.0f / 1.0f);
+//    if (i_d_norm >  1.0f) i_d_norm =  1.0f;
+//    if (i_d_norm < -1.0f) i_d_norm = -1.0f;
+//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
+//                     (uint32_t)((i_d_norm + 1.0f) * 0.5f * 4095.0f));
+
+    float i_q_norm = motor.state.i_q * (1.0f / 1.0f);
+    if (i_q_norm >  1.0f) i_q_norm =  1.0f;
+    if (i_q_norm < -1.0f) i_q_norm = -1.0f;
     HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
-                     (uint32_t)((i_u_norm + 1.0f) * 0.5f * 4095.0f));
+                     (uint32_t)((i_q_norm + 1.0f) * 0.5f * 4095.0f));
+
+    //For max 0.5
+//    float i_d_norm = motor.state.i_d * (1.0f / 0.5f);
+//    float i_d_norm = motor.state.i_d * (1.0f / 1.0f);
+//    if (i_d_norm >  1.0f) i_d_norm =  1.0f;
+//    if (i_d_norm < -1.0f) i_d_norm = -1.0f;
+//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
+//                     (uint32_t)((i_d_norm + 1.0f) * 0.5f * 4095.0f));
+
+
+//        float v_d_norm = motor.out.v_d* (1.0f / 0.4f);
+//        if (v_d_norm >  1.0f) v_d_norm =  1.0f;
+//        if (v_d_norm < -1.0f) v_d_norm = -1.0f;
+//        HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
+//                         (uint32_t)((v_d_norm + 1.0f) * 0.5f * 4095.0f));
 //    PWM_SetDuties(0.8, 0.5, 0.3);
     isr_cycles = DWT->CYCCNT - t0;
 
@@ -360,7 +401,14 @@ static void cmd_apply(uint8_t cmd, float val)
     switch (cmd) {
         case 0x01u: { /* SET_MODE */
             FOC_CtrlMode_t new_mode = (FOC_CtrlMode_t)val;
-            if (new_mode != motor.ref.mode) {
+            /* While stopped, the live ref.mode must stay pinned at
+             * FOC_MODE_VOLTAGE (gate disabled) — switching it to a PI-driven
+             * mode here would run the current/velocity/position loop against
+             * a bridge that can't respond, winding up the integrator before
+             * RESUME ever re-enables it. Redirect the request to
+             * mode_before_stop instead; RESUME already applies it. */
+            FOC_CtrlMode_t *target = motor_stopped ? &mode_before_stop : &motor.ref.mode;
+            if (new_mode != *target) {
                 motor.ref.v_d_ref   = 0.0f;
                 motor.ref.v_q_ref   = 0.0f;
                 motor.ref.i_d_ref   = 0.0f;
@@ -372,16 +420,16 @@ static void cmd_apply(uint8_t cmd, float val)
                 motor.ref.theta_ref = (new_mode == FOC_MODE_POSITION)
                                      ? (motor.state.theta_mech - motor.hw.theta_mech_offset)
                                      : 0.0f;
-                fgen.enabled        = 0u;
-                motor.ref.mode      = new_mode;
+                fgen.enabled = 0u;
+                *target      = new_mode;
                 FOC_Reset();
             }
             break;
         }
         case 0x02u: motor.ref.v_d_ref = val; break;  /* SET_VD_REF */
         case 0x03u: motor.ref.v_q_ref = val; break;  /* SET_VQ_REF */
-//      case 0x04u: motor.ref.i_d_ref   = val; break;  /* SET_ID_REF  — torque mode disabled */
-//      case 0x05u: motor.ref.i_q_ref   = val; break;  /* SET_IQ_REF  — torque mode disabled */
+        case 0x04u: motor.ref.i_d_ref   = val; break;  /* SET_ID_REF  */
+        case 0x05u: motor.ref.i_q_ref   = val; break;  /* SET_IQ_REF  */
 //      case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF — velocity disabled  */
 //      case 0x07u: motor.ref.theta_ref  = val; break;  /* SET_THETA_REF — position disabled  */
         case 0x08u: { /* STOP */
@@ -460,6 +508,7 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+  HAL_Delay(6000);	//Test power-up delay
 
   /* USER CODE BEGIN SysInit */
 
@@ -513,6 +562,23 @@ int main(void)
 //  motor.ref.v_q_ref = 1.0f;
 
   FOC_Init();
+
+  /* Current loop PI gains — pole placement: Kp = 2*zeta*wn*L - R,  Ki = L*wn^2 (cont.)
+   * Ki is scaled by Ts here for forward-Euler discretisation (integrator += Ki*error each step). */
+  {
+      const float R     = motor.params.Rs;
+      const float L     = motor.params.Ld;           /* Ld = Lq by assumption */
+      const float Kp    = 2.0f * FOC_CURRENT_ZETA * FOC_CURRENT_WN * L - R;
+      const float Ki    = L * (FOC_CURRENT_WN * FOC_CURRENT_WN) * FOC_TS_HW;
+      const float v_lim = FOC_V_BUS_NOMINAL * FOC_ONE_OVER_SQRT3;
+      FOC_PID_Init(&foc_pid_id, Kp, Ki, 0.0f, -v_lim, v_lim);
+      FOC_PID_Init(&foc_pid_iq, Kp, Ki, 0.0f, -v_lim, v_lim);
+
+      /* Same Kp/Ki -> identical poles; kept initialised so the I-P swap
+       * in FOC_CurrentCtrlComputation (foc.c) works without touching this file. */
+      FOC_IP_Init(&foc_ip_id, Kp, Ki, -v_lim, v_lim);
+      FOC_IP_Init(&foc_ip_iq, Kp, Ki, -v_lim, v_lim);
+  }
 
   HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
 

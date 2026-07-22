@@ -26,16 +26,46 @@
  *   Rs_LL = 202 mΩ  →  Rs_Y  = Rs_LL / 2  = 101 mΩ
  *   L_LL  = 138 µH  →  Ls_Y  = L_LL  / 2  = 69 µH
  *   lambda_pm derived from Kt = 0.078 Nm/A:  λ = 2·Kt / (3·p) = 3.71 mWb
- * Verify Rs and Ls with a locked-rotor impedance measurement before tuning PIDs.
  * -------------------------------------------------------------------------- */
+
+ /* 7/22/2026 - Staircase input test yielded electrical time constant of around 528 us which gave Rd = 0.401 Ohms and Ld = 211 uH*/
 // #define FOC_MOTOR_RS         0.101f  /* spec: Rs_LL=202mΩ → Y-equiv=101mΩ             */
-#define FOC_MOTOR_RS            0.35f   /* measured: locked-rotor vd&vq tests (incl. cables) (Ohm) */
-#define FOC_MOTOR_LD            69e-6f  /* d-axis inductance   Y-equiv    (H)             */
-#define FOC_MOTOR_LQ            69e-6f  /* q-axis inductance   Y-equiv    (H)             */
+// #define FOC_MOTOR_RS         0.35f   /* measured: locked-rotor vd&vq tests (incl. cables) */
+// #define FOC_MOTOR_RS            0.44f   /* measured: Rd = Rq impedance sweep              (Ohm) */
+#define FOC_MOTOR_RS            0.401f   /* measured: Rd = Rq staircase input              (Ohm) */
+// #define FOC_MOTOR_LD         69e-6f  /* spec Y-equiv                                   */
+// #define FOC_MOTOR_LD            158e-6f /* measured: Ld                                   (H)   */
+#define FOC_MOTOR_LD            211e-6f /* measured: Ld    - Staircase input                               (H)   */
+// #define FOC_MOTOR_LQ         69e-6f  /* spec Y-equiv                                   */
+// #define FOC_MOTOR_LQ            158e-6f /* measured: Lq (assumed = Ld)                    (H)   */
+#define FOC_MOTOR_LQ            211e-6f /* measured: Lq (assumed = Ld)  - Staircase input                  (H)   */
 // #define FOC_MOTOR_LAMBDA_PM  0.00371f/* spec: from Kt=0.078 Nm/A peak                 */
 #define FOC_MOTOR_LAMBDA_PM     0.0055f /* measured: back-EMF vs speed at 1.5V open-loop  (Wb) */
 #define FOC_MOTOR_POLE_PAIRS    14      /* Number of pole pairs                           */
 // #define FOC_MOTOR_POLE_PAIRS    1       /* Number of pole pairs  (1 for only testing duty output respect to angle)                        */
+/* --------------------------------------------------------------------------
+ * Current loop emergency limit
+ * If |id| or |iq| exceeds this threshold, FOC_Step() forces the motor to
+ * zero-voltage mode and resets all PIDs.  Raise once the current loop is
+ * validated; set to rated_current for normal operation.
+ * -------------------------------------------------------------------------- */
+#define FOC_CURRENT_EMERGENCY_LIMIT  1.0f   /* (A) — test limit */
+
+/* --------------------------------------------------------------------------
+ * Current loop PI design — pole placement
+ *
+ * Closed-loop poles placed at s = -zeta*wn ± wn*sqrt(zeta^2-1).
+ * Formulas (continuous):
+ *   Kp = 2*zeta*wn*L - R
+ *   Ki = L*wn^2
+ * Ki is further scaled by Ts (forward Euler) at init time in main.c.
+ *
+ * Constraint for Kp > 0:  wn > R / (2*zeta*L)  
+ * -------------------------------------------------------------------------- */
+// #define FOC_CURRENT_WN          8000.0f /* Current loop natural frequency     (rad/s) */ //Works with I-P but oscillates. Gotta try digital design
+#define FOC_CURRENT_WN          6283.0f /* Current loop natural frequency     (rad/s) */ //Works very well with I-P control
+#define FOC_CURRENT_ZETA        1.0f    /* Current loop damping ratio (critically damped) */
+
 /* --------------------------------------------------------------------------
  * Motor mechanical parameters — CubeMars AK60-6 V1.1 (KV80)
  *
@@ -67,6 +97,7 @@
 
 /* --------------------------------------------------------------------------
  * Calibration defaults
+ 
  * -------------------------------------------------------------------------- */
 #define FOC_CAL_V_D             2.0f    /* d-axis alignment voltage       (V)
                                            Typical: 10–20 % of v_bus.                    */

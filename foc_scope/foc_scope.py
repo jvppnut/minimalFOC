@@ -61,7 +61,7 @@ CMD_FGEN_OFFSET   = 0x0D
 CMD_FGEN_ENABLE   = 0x0E
 
 MODES     = ['Voltage', 'Torque', 'Velocity', 'Position']
-WAVEFORMS = ['Step', 'Square', 'Triangle', 'Sine']
+WAVEFORMS = ['Step', 'Square', 'Triangle', 'Sine', 'Staircase2']
 BAUD      = 921600
 SAMPLE_RATE = 1000  # Hz (20 kHz ISR decimated ×20)
 

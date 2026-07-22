@@ -2,6 +2,7 @@
 #define FOC_H
 
 #include "core/math/foc_pid.h"
+#include "core/math/foc_ip.h"
 #include "motor/foc_motor.h"
 
 /* -------------------------------------------------------------------------
@@ -21,6 +22,15 @@ extern FOC_PID_t foc_pid_id;
 extern FOC_PID_t foc_pid_iq;
 extern FOC_PID_t foc_pid_speed;
 extern FOC_PID_t foc_pid_pos;
+
+/* I-P alternates for the current loop — same Kp/Ki, no reference-path zero.
+ * Kept initialised alongside foc_pid_id/iq at all times; which one actually
+ * drives v_d/v_q is selected in FOC_CurrentCtrlComputation() (foc.c) by
+ * commenting/uncommenting the two-line block there. Used to check whether an
+ * observed step-response mismatch comes from the PI zero or from the poles
+ * themselves. */
+extern FOC_IP_t foc_ip_id;
+extern FOC_IP_t foc_ip_iq;
 
 /* Zero all integrator state. Call once at startup after configuring gains. */
 void FOC_Init(void);
