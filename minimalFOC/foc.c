@@ -66,13 +66,19 @@ void FOC_CurrentCtrlComputation(FOC_Motor_t *motor)
    float vd_fb = FOC_IP_Update(&foc_ip_id, r->i_d_ref, s->i_d);
    float vq_fb = FOC_IP_Update(&foc_ip_iq, r->i_q_ref, s->i_q);
 
-    /* Cross-coupling and back-EMF feedforward — disabled for current loop testing.
-     * Re-enable by uncommenting the two ff lines and switching back to vd_fb+vd_ff. */
-//    float vd_ff = -omega_e * p->Lq * s->i_q;
-//    float vq_ff =  omega_e * (p->Ld * s->i_d + p->lambda_pm);
+    /* Cross-coupling and back-EMF feedforward.
+     * To disable for current-loop-only testing, comment the two ff lines
+     * back out and clamp vd_fb/vq_fb directly instead. */
+    float vd_ff = -omega_e * p->Lq * s->i_q;
+    float vq_ff =  omega_e * (p->Ld * s->i_d + p->lambda_pm);
 
-    o->v_d = FOC_Clamp(vd_fb, -v_lim, v_lim);
-    o->v_q = FOC_Clamp(vq_fb, -v_lim, v_lim);
+    // With decoupling
+    o->v_d = FOC_Clamp(vd_fb + vd_ff, -v_lim, v_lim);
+    o->v_q = FOC_Clamp(vq_fb + vq_ff, -v_lim, v_lim);
+
+    // // Without decoupling
+    // o->v_d = FOC_Clamp(vd_fb, -v_lim, v_lim);
+    // o->v_q = FOC_Clamp(vq_fb, -v_lim, v_lim);
 }
 
 void FOC_VelocityCtrlComputation(FOC_Motor_t *motor)
@@ -140,6 +146,18 @@ void FOC_Step(FOC_Motor_t *motor)
     /* --- Emergency current limit ----------------------------------------- */
     if ((s->i_d > FOC_CURRENT_EMERGENCY_LIMIT || s->i_d < -FOC_CURRENT_EMERGENCY_LIMIT) ||
         (s->i_q > FOC_CURRENT_EMERGENCY_LIMIT || s->i_q < -FOC_CURRENT_EMERGENCY_LIMIT)) {
+        r->mode      = FOC_MODE_VOLTAGE;
+        r->v_d_ref   = 0.0f;
+        r->v_q_ref   = 0.0f;
+        r->i_d_ref   = 0.0f;
+        r->i_q_ref   = 0.0f;
+        r->omega_ref = 0.0f;
+        FOC_Reset();
+    }
+
+    /* --- Emergency velocity limit ----------------------------------------- */
+    if (s->omega_mech > FOC_VELOCITY_EMERGENCY_LIMIT ||
+        s->omega_mech < -FOC_VELOCITY_EMERGENCY_LIMIT) {
         r->mode      = FOC_MODE_VOLTAGE;
         r->v_d_ref   = 0.0f;
         r->v_q_ref   = 0.0f;

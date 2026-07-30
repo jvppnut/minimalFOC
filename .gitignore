@@ -11,3 +11,8 @@ __pycache__/
 # CubeIDE build artifacts
 minimalFOC_stm32f7/Debug/
 minimalFOC_stm32f7/Release/
+
+# Raw logged test data (multi-MB per run; regenerable via foc_scope.py) —
+# keep the analysis scripts in tools/ under version control, not the logs.
+tools/*.csv
+tools/ValidationData/

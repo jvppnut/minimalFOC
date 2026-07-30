@@ -15,6 +15,7 @@ Command frame (PC → MCU), 7 bytes:
 
 import sys
 import csv
+import math
 import struct
 import serial
 import threading
@@ -43,6 +44,17 @@ FIELDS = [
     'isr_us',
 ]
 IDX = {f: i for i, f in enumerate(FIELDS)}
+
+# Derived (not transmitted — computed locally from telemetry each frame)
+DERIVED_FIELDS = ['v_mag']
+ALL_FIELDS = FIELDS + DERIVED_FIELDS
+
+# SVPWM circular-locus voltage limit — matches v_lim = v_bus * FOC_ONE_OVER_SQRT3
+# in foc.c. |v| = sqrt(v_d^2 + v_q^2) saturates here; treat ~85% as the
+# practical backoff point before the current-step transient starts clipping.
+V_BUS_NOMINAL = 24.0
+V_LIM         = V_BUS_NOMINAL / math.sqrt(3.0)
+V_LIM_CAUTION = 0.85 * V_LIM
 
 # ── Command codes ──────────────────────────────────────────────────────────────
 CMD_SET_MODE      = 0x01
@@ -179,6 +191,7 @@ class FocScope(QMainWindow):
         'i_q_ref':  '#90ee90',
         'v_d':      '#e74c3c',
         'v_q':      '#2ecc71',
+        'v_mag':    '#00d9ff',
         'theta_mech': '#f1c40f',
         'theta_elec': '#9b59b6',
         'omega_mech': '#1abc9c',
@@ -198,7 +211,7 @@ class FocScope(QMainWindow):
 
         self._t_buf = collections.deque(maxlen=self.MAX_BUF_SAMPLES)
         self._bufs  = {f: collections.deque(maxlen=self.MAX_BUF_SAMPLES)
-                       for f in FIELDS}
+                       for f in ALL_FIELDS}
         self._t_now = 0.0
         self._rx_mode = 0
         self._frozen = False
@@ -382,16 +395,21 @@ class FocScope(QMainWindow):
         self._plot_widgets: dict[str, pg.PlotWidget] = {}
         self._yaxis_edits: dict[str, tuple[QLineEdit, QLineEdit]] = {}
 
-        def add_plot(row, col, key, title, ylabel, traces, y_default):
-            """traces: list of (field_key, legend_label)"""
+        def add_plot(row, col, key, title, ylabel, traces, y_default, hlines=None):
+            """traces: list of (field_key, legend_label)
+            hlines: optional list of (y_value, color) dashed reference lines"""
             pw = pg.PlotWidget(title=title)
             pw.setLabel('left', ylabel)
             pw.setLabel('bottom', 't (s)')
             pw.addLegend(offset=(5, 5))
             pw.showGrid(x=True, y=True, alpha=0.25)
             for f, lbl in traces:
-                pen = pg.mkPen(color=self.COLORS.get(f, '#ffffff'), width=1)
+                width = 2 if f in DERIVED_FIELDS else 1
+                pen = pg.mkPen(color=self.COLORS.get(f, '#ffffff'), width=width)
                 self._curves[f] = pw.plot(pen=pen, name=lbl)
+            if hlines:
+                for y, color in hlines:
+                    pw.addLine(y=y, pen=pg.mkPen(color=color, width=1, style=Qt.DashLine))
             self._plot_widgets[key] = pw
 
             cell = QWidget()
@@ -427,7 +445,9 @@ class FocScope(QMainWindow):
                  [('i_d','i_d'), ('i_q','i_q'),
                   ('i_d_ref','i_d_ref'), ('i_q_ref','i_q_ref')], (-10.0, 10.0))
         add_plot(1, 0, 'dq_v', 'dq Voltages (post-limiter)', 'V',
-                 [('v_d','v_d'), ('v_q','v_q')], (-12.0, 12.0))
+                 [('v_d','v_d'), ('v_q','v_q'), ('v_mag','|v|')], (-15.0, 15.0),
+                 hlines=[(V_LIM, '#e74c3c'), (V_LIM_CAUTION, '#f39c12'),
+                         (-V_LIM, '#e74c3c'), (-V_LIM_CAUTION, '#f39c12')])
         add_plot(1, 1, 'angles', 'Angles', 'rad',
                  [('theta_mech','θ_mech'), ('theta_elec','θ_elec')], (-3.5, 3.5))
         add_plot(2, 0, 'omega', 'Mechanical Velocity', 'rad/s',
@@ -448,12 +468,18 @@ class FocScope(QMainWindow):
         h.setSpacing(0)
         self._live_labels: dict[str, QLabel] = {}
 
-        live_order = FIELDS + ['mode']
+        live_order = []
+        for f in FIELDS:
+            live_order.append(f)
+            if f == 'v_q':
+                live_order.append('v_mag')
+        live_order.append('mode')
+
         live_names = {
             'theta_mech': 'θ_mech', 'omega_mech': 'ω_mech',
             'theta_elec': 'θ_elec', 'i_u': 'i_u', 'i_v': 'i_v',
             'i_w': 'i_w', 'i_d': 'i_d', 'i_q': 'i_q',
-            'v_d': 'v_d', 'v_q': 'v_q', 'i_d_ref': 'i_d_ref',
+            'v_d': 'v_d', 'v_q': 'v_q', 'v_mag': '|v|', 'i_d_ref': 'i_d_ref',
             'i_q_ref': 'i_q_ref', 'omega_ref': 'ω_ref',
             'theta_ref': 'θ_ref', 'isr_us': 'isr(µs)', 'mode': 'mode',
         }
@@ -568,8 +594,8 @@ class FocScope(QMainWindow):
             return
         with open(path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['t'] + FIELDS)
-            writer.writerows(zip(self._t_buf, *(self._bufs[f] for f in FIELDS)))
+            writer.writerow(['t'] + ALL_FIELDS)
+            writer.writerows(zip(self._t_buf, *(self._bufs[f] for f in ALL_FIELDS)))
 
     def _on_yaxis_mode_change(self, idx: int):
         manual = (idx == 1)
@@ -613,6 +639,8 @@ class FocScope(QMainWindow):
             self._t_buf.append(self._t_now)
             for f in FIELDS:
                 self._bufs[f].append(floats[IDX[f]])
+            self._bufs['v_mag'].append(
+                math.hypot(floats[IDX['v_d']], floats[IDX['v_q']]))
             self._rx_mode = mode
             n += 1
 
@@ -627,7 +655,7 @@ class FocScope(QMainWindow):
 
         # Live values panel
         mode_names = ['Voltage', 'Torque', 'Velocity', 'Position', 'Cal']
-        for f in FIELDS:
+        for f in ALL_FIELDS:
             if not self._bufs[f]:
                 continue
             v = self._bufs[f][-1]
