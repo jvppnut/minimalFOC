@@ -49,7 +49,19 @@
  * zero-voltage mode and resets all PIDs.  Raise once the current loop is
  * validated; set to rated_current for normal operation.
  * -------------------------------------------------------------------------- */
-#define FOC_CURRENT_EMERGENCY_LIMIT  1.0f   /* (A) — test limit */
+#define FOC_CURRENT_EMERGENCY_LIMIT  6.0f   /* (A) — test limit */
+
+/* --------------------------------------------------------------------------
+ * Velocity emergency limit
+ * If |omega_mech| exceeds this threshold, FOC_Step() forces the motor to
+ * zero-voltage mode and resets all PIDs — same trip behaviour as the current
+ * emergency limit above. Meant to catch a runaway/instability (e.g. during
+ * velocity-loop tuning) well before the current loop's v_lim clamp quietly
+ * saturates and the motor keeps accelerating without any explicit fault.
+ * Set well under FOC_MOTOR_RATED_SPEED while validating; raise once the
+ * velocity loop is trusted.
+ * -------------------------------------------------------------------------- */
+#define FOC_VELOCITY_EMERGENCY_LIMIT 150.0f  /* (rad/s) — test limit */
 
 /* --------------------------------------------------------------------------
  * Current loop PI design — pole placement
@@ -64,17 +76,50 @@
  * -------------------------------------------------------------------------- */
 // #define FOC_CURRENT_WN          8000.0f /* Current loop natural frequency     (rad/s) */ //Works with I-P but oscillates. Gotta try digital design
 #define FOC_CURRENT_WN          6283.0f /* Current loop natural frequency     (rad/s) */ //Works very well with I-P control
+// #define FOC_CURRENT_WN          3500.0f /* Current loop natural frequency     (rad/s) */ //For testing PI control again
 #define FOC_CURRENT_ZETA        1.0f    /* Current loop damping ratio (critically damped) */
+
+/* --------------------------------------------------------------------------
+ * Velocity loop PI design — pole placement
+ *
+ * Plant: J*domega/dt = Kt*i_q_ref - Dm*omega - Tc*sign(omega)  (Tc treated as
+ * a disturbance for gain design, not part of the linear pole placement).
+ * Closed-loop poles placed at s = -zeta*wn +/- wn*sqrt(zeta^2-1), same
+ * method as the current loop but through the extra Kt gain in the forward
+ * path (control input here is i_q_ref, not torque directly):
+ *   Kp = (2*zeta*wn*J - Dm) / Kt
+ *   Ki = J*wn^2 / Kt
+ * Ki is further scaled by Ts (forward Euler) at init time in main.c.
+ *
+ * wn chosen ~30x slower than FOC_CURRENT_WN (6283 rad/s) so the inner
+ * current loop can be treated as instantaneous from the velocity loop's
+ * perspective, and comfortably under the estimator's 200 Hz (~1257 rad/s)
+ * LPF cutoff so the loop isn't reacting faster than its own velocity
+ * measurement can inform it.
+ * -------------------------------------------------------------------------- */
+#define FOC_VELOCITY_WN         200.0f  /* Velocity loop natural frequency    (rad/s) */
+#define FOC_VELOCITY_ZETA       1.0f    /* Velocity loop damping ratio (critically damped) */
 
 /* --------------------------------------------------------------------------
  * Motor mechanical parameters — CubeMars AK60-6 V1.1 (KV80)
  *
  * Rated speed is motor-shaft (pre-gearbox): 420 rpm × 6 × 2π/60 = 264 rad/s
- * Rotor inertia (spec): 243.5 g·cm² = 2.435e-5 kg·m² — verify motor vs output side.
- * Dm not specified; 1e-4 is a placeholder — identify from deceleration test.
+ *
+ * 7/30/2026 - J and Dm identified via a +/-0.07A, 5Hz i_q square-wave test
+ * with varying offsets keeping omega_mech always positive (tools/
+ * foc_mech_id.m): least-squares fit of T=J*domega/dt + Dm*omega +
+ * Tc*sign(omega) against Kt*i_q_ref. Cross-validated by forward-simulating
+ * the fitted model against a separate +/-0.2A, 2Hz square-wave dataset that
+ * does cross zero — near-perfect match once Coulomb friction was included
+ * (the asymmetric transients seen in that crossing dataset were Tc, not a
+ * modeling bug). Coulomb friction Tc = 0.01314 Nm — sizeable relative to
+ * the ~0.023 Nm driving torque at 0.2A, worth carrying into velocity/
+ * position loop design as a feedforward term once that struct field exists.
  * -------------------------------------------------------------------------- */
-#define FOC_MOTOR_J             2.435e-5f/* Rotor inertia                 (kg·m²)         */
-#define FOC_MOTOR_DM            1e-4f   /* Viscous friction (estimated)   (N·m·s/rad)     */
+// #define FOC_MOTOR_J          2.435e-5f/* spec: 243.5 g·cm^2 rotor inertia (kg·m²) */
+#define FOC_MOTOR_J             6.498115558493604e-5f /* measured: i_q square-wave ID (kg·m²) */
+// #define FOC_MOTOR_DM         1e-4f    /* placeholder estimate           (N·m·s/rad)     */
+#define FOC_MOTOR_DM            9.410621428371238e-5f /* measured: i_q square-wave ID (N·m·s/rad) */
 #define FOC_MOTOR_RATED_CURRENT 6.5f    /* Rated phase current            (A)  peak=13.1A */
 #define FOC_MOTOR_RATED_SPEED   264.0f  /* Motor shaft rated speed        (rad/s) out=44  */
 

@@ -283,12 +283,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (fgen.enabled && !motor_stopped) {
         float fgen_out = fgen_update(&fgen);
         if (motor.ref.mode == FOC_MODE_VOLTAGE) {
-//            motor.ref.v_q_ref = fgen_out;
-        	motor.ref.v_d_ref = fgen_out; //Just for measuring d axis parameters
+            motor.ref.v_q_ref = fgen_out;
+//        	motor.ref.v_d_ref = fgen_out; //Just for measuring d axis parameters
         }
 //      else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_d_ref   = fgen_out; //For testing id current control, this should be iq
         else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_q_ref   = fgen_out;
-//      else if (motor.ref.mode == FOC_MODE_VELOCITY)  motor.ref.omega_ref = fgen_out;
+        else if (motor.ref.mode == FOC_MODE_VELOCITY)  motor.ref.omega_ref = fgen_out;
 //      else if (motor.ref.mode == FOC_MODE_POSITION)  motor.ref.theta_ref = fgen_out;
     }
 
@@ -430,7 +430,7 @@ static void cmd_apply(uint8_t cmd, float val)
         case 0x03u: motor.ref.v_q_ref = val; break;  /* SET_VQ_REF */
         case 0x04u: motor.ref.i_d_ref   = val; break;  /* SET_ID_REF  */
         case 0x05u: motor.ref.i_q_ref   = val; break;  /* SET_IQ_REF  */
-//      case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF — velocity disabled  */
+        case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF */
 //      case 0x07u: motor.ref.theta_ref  = val; break;  /* SET_THETA_REF — position disabled  */
         case 0x08u: { /* STOP */
             /* Drop to voltage mode at 0V instead of leaving the previous
@@ -528,7 +528,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   printf("Starting main loop \r\n");
 
-  uint32_t t_stop = HAL_GetTick() + 80000U; /* 40 s safety limit */
 
   // Motor params
   motor.params.Rs         = FOC_MOTOR_RS;
@@ -536,6 +535,8 @@ int main(void)
   motor.params.Lq         = FOC_MOTOR_LQ;
   motor.params.lambda_pm  = FOC_MOTOR_LAMBDA_PM;
   motor.params.pole_pairs = FOC_MOTOR_POLE_PAIRS;
+  motor.params.J          = FOC_MOTOR_J;
+  motor.params.Dm         = FOC_MOTOR_DM;
 
   // HW config
   motor.hw.Ts               = FOC_TS_HW;
@@ -578,6 +579,20 @@ int main(void)
        * in FOC_CurrentCtrlComputation (foc.c) works without touching this file. */
       FOC_IP_Init(&foc_ip_id, Kp, Ki, -v_lim, v_lim);
       FOC_IP_Init(&foc_ip_iq, Kp, Ki, -v_lim, v_lim);
+  }
+
+  /* Velocity loop PI gains — pole placement through the extra Kt gain:
+   * Kp = (2*zeta*wn*J - Dm)/Kt,  Ki = J*wn^2/Kt (see foc_config.h). Output
+   * is i_q_ref, clamped to the current emergency test limit for now —
+   * raise alongside FOC_CURRENT_EMERGENCY_LIMIT once validated. */
+  {
+      const float J     = motor.params.J;
+      const float Dm    = motor.params.Dm;
+      const float Kt    = 1.5f * (float)motor.params.pole_pairs * motor.params.lambda_pm;
+      const float Kp_w  = (2.0f * FOC_VELOCITY_ZETA * FOC_VELOCITY_WN * J - Dm) / Kt;
+      const float Ki_w  = (J * (FOC_VELOCITY_WN * FOC_VELOCITY_WN) / Kt) * FOC_TS_HW;
+      const float i_lim = FOC_CURRENT_EMERGENCY_LIMIT*0.7;
+      FOC_PID_Init(&foc_pid_speed, Kp_w, Ki_w, 0.0f, -i_lim, i_lim);
   }
 
   HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
