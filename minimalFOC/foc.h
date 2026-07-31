@@ -84,7 +84,16 @@ void FOC_VelocityCtrlComputation(FOC_Motor_t *motor);
  * PD controller — no intermediate velocity loop.
  * The D term is the measured omega_mech (negative sign applied internally),
  * which damps the approach without a separate speed setpoint.
- * Position error is wrapped to (−π, π] for shortest-path tracking.
+ * Position error is absolute (unwrapped) — theta_ref is tracked as a
+ * genuine multi-turn target, not a shortest-path angle mod 2*pi. Needed
+ * for correct output-side tracking through a reduction ratio.
+ *
+ * ref.theta_ref is tracked as given — this function has no notion of where
+ * the reference comes from or whether it's been shaped into a smooth
+ * trajectory. Reference shaping (e.g. trapezoidal profiling to avoid large
+ * current transients from a raw step) is the caller's responsibility; see
+ * core/math/foc_trapgen.h for a reusable profile generator intended to be
+ * driven by the application layer, one level above this library.
  *
  * Reads  : state.theta_mech, omega_mech; ref.theta_ref
  * Writes : ref.i_q_ref

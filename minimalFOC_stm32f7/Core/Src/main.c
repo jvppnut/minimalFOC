@@ -29,6 +29,7 @@
 #include "driver/foc_drv8323.h"
 #include "driver/foc_as5147.h"
 #include "core/math/foc_math.h"
+#include "core/math/foc_trapgen.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -114,6 +115,17 @@ typedef struct {
     float    phase;      /* accumulator [0, 1) */
 } FOC_FuncGen_t;
 static FOC_FuncGen_t fgen;
+
+/* Position reference shaping — application-layer concern, not foc.c's.
+ * theta_target is the raw, instantaneously-set commanded position (from a
+ * UART command or the fgen); trapgen_pos shapes it into a trapezoidal
+ * trajectory each tick, and only the shaped output is written into
+ * motor.ref.theta_ref for foc.c to track. Kept here (rather than inside
+ * the portable library) so that on a future CAN-networked multi-actuator
+ * build, a coordinator-driven reference can be substituted here without
+ * foc.c ever needing to know or care where theta_ref comes from. */
+static float         theta_target = 0.0f;
+static FOC_TrapGen_t trapgen_pos;
 
 /* UART RX — DMA circular buffer; main loop polls write pointer, no callbacks needed */
 #define CMD_DMA_BUF_SIZE 64u
@@ -289,33 +301,29 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //      else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_d_ref   = fgen_out; //For testing id current control, this should be iq
         else if (motor.ref.mode == FOC_MODE_TORQUE)    motor.ref.i_q_ref   = fgen_out;
         else if (motor.ref.mode == FOC_MODE_VELOCITY)  motor.ref.omega_ref = fgen_out;
-//      else if (motor.ref.mode == FOC_MODE_POSITION)  motor.ref.theta_ref = fgen_out;
+        else if (motor.ref.mode == FOC_MODE_POSITION)  theta_target        = fgen_out;
+    }
+
+    /* Shape theta_target into a trapezoidal trajectory before foc.c tracks
+     * it — application-layer concern, see trapgen_pos declaration above.
+     * Seeds from the real position on first use after a reset, and replans
+     * whenever theta_target actually changes (bumpless start / re-target,
+     * same tradeoffs as documented in foc_trapgen.h). */
+    if (motor.ref.mode == FOC_MODE_POSITION) {
+        if (!trapgen_pos.initialized) {
+            FOC_TrapGen_Seed(&trapgen_pos, motor.state.theta_mech - motor.hw.theta_mech_offset);
+        }
+        if (theta_target != trapgen_pos.last_target_raw) {
+            FOC_TrapGen_Start(&trapgen_pos, theta_target,
+                               FOC_POSITION_TRAP_VMAX, FOC_POSITION_TRAP_AMAX);
+        }
+        motor.ref.theta_ref = FOC_TrapGen_Update(&trapgen_pos, FOC_TS_HW);
     }
 
     FOC_Step(&motor);
 //  PWM_SetDuties(motor.out.duty_u, motor.out.duty_v, motor.out.duty_w);  // V/W original order
     PWM_SetDuties(motor.out.duty_u, motor.out.duty_w, motor.out.duty_v);  // V and W swapped
 
-//    uint32_t dac_val = (uint32_t)(motor.state.theta_mech_st * (4095.0f / (2.0f * 3.14159265f)));
-//    if (dac_val > 4095u) dac_val = 4095u;
-//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
-//    float e_norm = motor.state.theta_elec * (1.0f / (2.0f * 3.14159265f));
-//    e_norm -= (float)(int32_t)e_norm;
-//    if (e_norm < 0.0f) e_norm += 1.0f;
-//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(e_norm * 4095.0f));
-
-//    /* i_u on DAC CH1: 0V = -10A, 1.65V = 0A, 3.3V = +10A */
-//    float i_u_norm = motor.state.i_u * (1.0f / 10.0f);
-//    if (i_u_norm >  1.0f) i_u_norm =  1.0f;
-//    if (i_u_norm < -1.0f) i_u_norm = -1.0f;
-//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
-//                     (uint32_t)((i_u_norm + 1.0f) * 0.5f * 4095.0f));
-    /* i_u on DAC CH1: 0V = -10A, 1.65V = 0A, 3.3V = +10A */
-//    float i_d_norm = motor.state.i_d * (1.0f / 1.0f);
-//    if (i_d_norm >  1.0f) i_d_norm =  1.0f;
-//    if (i_d_norm < -1.0f) i_d_norm = -1.0f;
-//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
-//                     (uint32_t)((i_d_norm + 1.0f) * 0.5f * 4095.0f));
 
     float i_q_norm = motor.state.i_q * (1.0f / 1.0f);
     if (i_q_norm >  1.0f) i_q_norm =  1.0f;
@@ -323,21 +331,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
                      (uint32_t)((i_q_norm + 1.0f) * 0.5f * 4095.0f));
 
-    //For max 0.5
-//    float i_d_norm = motor.state.i_d * (1.0f / 0.5f);
-//    float i_d_norm = motor.state.i_d * (1.0f / 1.0f);
-//    if (i_d_norm >  1.0f) i_d_norm =  1.0f;
-//    if (i_d_norm < -1.0f) i_d_norm = -1.0f;
-//    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
-//                     (uint32_t)((i_d_norm + 1.0f) * 0.5f * 4095.0f));
 
-
-//        float v_d_norm = motor.out.v_d* (1.0f / 0.4f);
-//        if (v_d_norm >  1.0f) v_d_norm =  1.0f;
-//        if (v_d_norm < -1.0f) v_d_norm = -1.0f;
-//        HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R,
-//                         (uint32_t)((v_d_norm + 1.0f) * 0.5f * 4095.0f));
-//    PWM_SetDuties(0.8, 0.5, 0.3);
     isr_cycles = DWT->CYCCNT - t0;
 
 //    static uint32_t log_tick = 0u;
@@ -415,11 +409,16 @@ static void cmd_apply(uint8_t cmd, float val)
                 motor.ref.i_q_ref   = 0.0f;
                 motor.ref.omega_ref = 0.0f;
                 /* Entering position mode: hold the current position instead of
-                 * snapping theta_ref to 0, which would command a step to the
-                 * calibration-zero angle and jerk the rotor. */
-                motor.ref.theta_ref = (new_mode == FOC_MODE_POSITION)
-                                     ? (motor.state.theta_mech - motor.hw.theta_mech_offset)
-                                     : 0.0f;
+                 * snapping theta_target to 0, which would command a step to
+                 * the calibration-zero angle and jerk the rotor. Resetting
+                 * trapgen_pos makes the shaping block re-seed from the real
+                 * position on the next tick (see the shaping block above
+                 * FOC_Step() in the ISR). */
+                theta_target = (new_mode == FOC_MODE_POSITION)
+                             ? (motor.state.theta_mech - motor.hw.theta_mech_offset)
+                             : 0.0f;
+                motor.ref.theta_ref = theta_target;
+                FOC_TrapGen_Reset(&trapgen_pos);
                 fgen.enabled = 0u;
                 *target      = new_mode;
                 FOC_Reset();
@@ -431,7 +430,7 @@ static void cmd_apply(uint8_t cmd, float val)
         case 0x04u: motor.ref.i_d_ref   = val; break;  /* SET_ID_REF  */
         case 0x05u: motor.ref.i_q_ref   = val; break;  /* SET_IQ_REF  */
         case 0x06u: motor.ref.omega_ref  = val; break;  /* SET_OMEGA_REF */
-//      case 0x07u: motor.ref.theta_ref  = val; break;  /* SET_THETA_REF — position disabled  */
+        case 0x07u: theta_target = val; break;  /* SET_THETA_REF */
         case 0x08u: { /* STOP */
             /* Drop to voltage mode at 0V instead of leaving the previous
              * mode running with zeroed refs: with the gate driver disabled
@@ -457,9 +456,11 @@ static void cmd_apply(uint8_t cmd, float val)
         case 0x09u: { /* RESUME */
             if (motor_stopped) {
                 /* Position mode: hold the current position rather than
-                 * resuming with the stale theta_ref zeroed out by STOP. */
+                 * resuming with the stale theta_target zeroed out by STOP. */
                 if (mode_before_stop == FOC_MODE_POSITION) {
-                    motor.ref.theta_ref = motor.state.theta_mech - motor.hw.theta_mech_offset;
+                    theta_target = motor.state.theta_mech - motor.hw.theta_mech_offset;
+                    motor.ref.theta_ref = theta_target;
+                    FOC_TrapGen_Reset(&trapgen_pos);
                 }
                 motor.ref.mode = mode_before_stop;
                 FOC_Reset();
@@ -593,6 +594,19 @@ int main(void)
       const float Ki_w  = (J * (FOC_VELOCITY_WN * FOC_VELOCITY_WN) / Kt) * FOC_TS_HW;
       const float i_lim = FOC_CURRENT_EMERGENCY_LIMIT*0.7;
       FOC_PID_Init(&foc_pid_speed, Kp_w, Ki_w, 0.0f, -i_lim, i_lim);
+  }
+
+  /* Position loop PD gains — pole placement (no integrator needed, the
+   * plant is already second order): Kp = J*wn^2/Kt, Kd = (2*zeta*wn*J-Dm)/Kt
+   * (see foc_config.h). Same output clamp as the velocity loop. */
+  {
+      const float J     = motor.params.J;
+      const float Dm    = motor.params.Dm;
+      const float Kt    = 1.5f * (float)motor.params.pole_pairs * motor.params.lambda_pm;
+      const float Kp_p  = J * (FOC_POSITION_WN * FOC_POSITION_WN) / Kt;
+      const float Kd_p  = (2.0f * FOC_POSITION_ZETA * FOC_POSITION_WN * J - Dm) / Kt;
+      const float i_lim = FOC_CURRENT_EMERGENCY_LIMIT*0.7;
+      FOC_PID_Init(&foc_pid_pos, Kp_p, 0.0f, Kd_p, -i_lim, i_lim);
   }
 
   HAL_DAC_Start(&hdac, DAC_CHANNEL_1);

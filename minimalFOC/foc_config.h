@@ -101,6 +101,41 @@
 #define FOC_VELOCITY_ZETA       1.0f    /* Velocity loop damping ratio (critically damped) */
 
 /* --------------------------------------------------------------------------
+ * Position loop PD design — pole placement
+ *
+ * Plant: J*d2theta/dt2 = Kt*i_q_ref - Dm*dtheta/dt - Tc*sign(dtheta/dt).
+ * Unlike the current/velocity loops this needs no integrator for pole
+ * placement — the plant itself is already second order (J*s^2 + Dm*s), so
+ * P+D alone places both poles:
+ *   Kp = J*wn^2 / Kt
+ *   Kd = (2*zeta*wn*J - Dm) / Kt
+ * (foc_pid_pos is used with Ki=0 — see foc.h.)
+ *
+ * wn chosen slower again than FOC_VELOCITY_WN for the same cascade-
+ * bandwidth-separation reason as before. Conservative first value — raise
+ * once validated, same pattern as the current/velocity loop bring-up.
+ * -------------------------------------------------------------------------- */
+#define FOC_POSITION_WN         20.0f   /* Position loop natural frequency    (rad/s) */
+#define FOC_POSITION_ZETA       1.0f    /* Position loop damping ratio (critically damped) */
+
+/* --------------------------------------------------------------------------
+ * Position trapezoidal reference generator (core/math/foc_trapgen.c)
+ *
+ * Shapes ref.theta_ref (set instantaneously by the caller) into a smooth
+ * trajectory before FOC_PositionCtrlComputation's PD sees it, instead of
+ * demanding a large instantaneous current from a raw position step.
+ *
+ * FOC_POSITION_TRAP_AMAX is bounded in principle by the current limit:
+ *   a_max <= Kt*i_lim/J
+ * which for this motor (Kt~0.1155, i_lim~4.2A, J~6.5e-5) is ~7500 rad/s^2 —
+ * the value below is deliberately far under that ceiling as a conservative
+ * first test value, same "start low, raise once validated" pattern used
+ * for every other loop in this project.
+ * -------------------------------------------------------------------------- */
+#define FOC_POSITION_TRAP_VMAX  30.0f   /* Max cruise velocity                (rad/s)   */
+#define FOC_POSITION_TRAP_AMAX  500.0f  /* Max acceleration                   (rad/s^2) */
+
+/* --------------------------------------------------------------------------
  * Motor mechanical parameters — CubeMars AK60-6 V1.1 (KV80)
  *
  * Rated speed is motor-shaft (pre-gearbox): 420 rpm × 6 × 2π/60 = 264 rad/s

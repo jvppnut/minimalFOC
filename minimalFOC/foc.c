@@ -99,8 +99,18 @@ void FOC_PositionCtrlComputation(FOC_Motor_t *motor)
 
     float theta_mech_true = s->theta_mech - hw->theta_mech_offset;
 
-    /* Shortest-path position error, wrapped to (−π, π]. */
-    float pos_err = FOC_WrapToPi(r->theta_ref - theta_mech_true);
+    /* Absolute (unwrapped) position error — theta_mech is a multi-turn
+     * angle (see foc_motor.h), and theta_ref is tracked as a genuine
+     * absolute target in that same frame, not a shortest-path angle mod
+     * 2*pi. This matters once there's a reduction ratio downstream: a large
+     * theta_ref (many motor turns for one output-shaft turn) must actually
+     * be tracked in full, not collapsed to its within-one-turn residue.
+     * r->theta_ref is tracked as-given — any reference shaping (e.g.
+     * trapezoidal profiling) is the caller's responsibility, not this
+     * library's. Keeps this function agnostic to where theta_ref comes
+     * from (local UART command, fgen, or eventually a CAN setpoint from a
+     * higher-level coordinator on a multi-actuator system). */
+    float pos_err = r->theta_ref - theta_mech_true;
 
     /* PD: output = Kp*err - Kd*omega_mech.
        FOC_PID_Update applies the negative sign on meas_dot internally. */
