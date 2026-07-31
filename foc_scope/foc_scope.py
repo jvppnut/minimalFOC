@@ -193,8 +193,10 @@ class FocScope(QMainWindow):
         'v_q':      '#2ecc71',
         'v_mag':    '#00d9ff',
         'theta_mech': '#f1c40f',
+        'theta_ref':  '#fff59d',
         'theta_elec': '#9b59b6',
         'omega_mech': '#1abc9c',
+        'omega_ref':  '#a3e4d7',
         'isr_us':   '#f39c12',
     }
 
@@ -449,9 +451,9 @@ class FocScope(QMainWindow):
                  hlines=[(V_LIM, '#e74c3c'), (V_LIM_CAUTION, '#f39c12'),
                          (-V_LIM, '#e74c3c'), (-V_LIM_CAUTION, '#f39c12')])
         add_plot(1, 1, 'angles', 'Angles', 'rad',
-                 [('theta_mech','θ_mech'), ('theta_elec','θ_elec')], (-3.5, 3.5))
+                 [('theta_mech','θ_mech'), ('theta_ref','θ_ref'), ('theta_elec','θ_elec')], (-3.5, 3.5))
         add_plot(2, 0, 'omega', 'Mechanical Velocity', 'rad/s',
-                 [('omega_mech','ω_mech')], (-50.0, 50.0))
+                 [('omega_mech','ω_mech'), ('omega_ref','ω_ref')], (-50.0, 50.0))
         add_plot(2, 1, 'isr', 'ISR Time', 'µs',
                  [('isr_us','isr')], (0.0, 50.0))
 
